@@ -1,0 +1,285 @@
+name: Release & Production Deployment
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  PYTHON_VERSION: '3.10'
+  NODE_VERSION: '18'
+  REGISTRY: ghcr.io
+  # Image name is computed per-job via `Compute image name (lowercase)` —
+  # github.repository preserves owner casing (e.g. "Sentry Agentic-SOC/sentry-agentic"), and
+  # OCI/GHCR requires fully lowercase paths. Don't reintroduce a workflow-
+  # level env that uses ${{ github.repository }} directly.
+
+jobs:
+  # ============================================================================
+  # Build Production Images
+  # ============================================================================
+  # Note: the GitHub Release object is created by release-please when the
+  # release PR is merged (see .github/workflows/release-please.yml). This
+  # workflow only builds, scans, deploys, and validates — it does not own
+  # the Release.
+  build-production-images:
+    name: Build Production Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name (lowercase)
+        id: image
+        # OCI/GHCR requires repository paths to be entirely lowercase.
+        # github.repository preserves the casing of the owner/repo names
+        # (e.g. "Sentry Agentic-SOC/sentry-agentic"), so we lowercase here before using it
+        # as part of an image tag. docker/metadata-action does this
+        # automatically; we don't use it in this workflow, so do it manually.
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-backend:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-backend:latest
+          labels: |
+            org.opencontainers.image.title=Sentry Agentic Backend
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push daemon image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.daemon
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-daemon:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-daemon:latest
+          labels: |
+            org.opencontainers.image.title=Sentry Agentic Daemon
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # Security Scan Production Images
+  # ============================================================================
+  scan-production-images:
+    name: Scan Production Images
+    runs-on: ubuntu-latest
+    needs: [build-production-images]
+    steps:
+      - name: Compute image name (lowercase)
+        id: image
+        # Mirrors the lowercasing step in build-production-images so Trivy
+        # references the same tag that was pushed. See note there.
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Run Trivy scanner on backend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-backend:${{ steps.version.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Run Trivy scanner on daemon
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}-daemon:${{ steps.version.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+  # ============================================================================
+  # Deploy to Production
+  # ============================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-production-images, scan-production-images]
+    environment:
+      name: production
+      url: https://app.sentry.ai
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image name (lowercase)
+        id: image
+        # Mirrors the lowercasing step in build-production-images so deploy
+        # scripts pull the same tag that was pushed. See note there.
+        run: echo "name=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.PROD_VM_HOST }} >> ~/.ssh/known_hosts
+      
+      - name: Backup current deployment
+        run: |
+          ssh ${{ secrets.PROD_VM_USER }}@${{ secrets.PROD_VM_HOST }} '
+            cd /opt/ai-opensoc &&
+            docker compose ps > backup-${{ steps.version.outputs.version }}.txt &&
+            docker images | grep ai-opensoc >> backup-${{ steps.version.outputs.version }}.txt
+          '
+      
+      - name: Deploy to production
+        id: deploy
+        run: |
+          chmod +x scripts/deploy_to_vm.sh
+          ./scripts/deploy_to_vm.sh production
+        env:
+          VM_HOST: ${{ secrets.PROD_VM_HOST }}
+          VM_USER: ${{ secrets.PROD_VM_USER }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAG: ${{ steps.version.outputs.version }}
+      
+      - name: Health check
+        id: health_check
+        run: |
+          sleep 60  # Wait for services to stabilize
+          
+          # Check API health
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://app.sentry.ai/health)
+          if [ $response -ne 200 ]; then
+            echo "Health check failed with status $response"
+            exit 1
+          fi
+          
+          # Check daemon metrics
+          daemon_response=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.PROD_VM_HOST }}:9090/metrics)
+          if [ $daemon_response -ne 200 ]; then
+            echo "Daemon health check failed"
+            exit 1
+          fi
+          
+          echo "All health checks passed"
+      
+      - name: Rollback on failure
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          ssh ${{ secrets.PROD_VM_USER }}@${{ secrets.PROD_VM_HOST }} '
+            cd /opt/ai-opensoc &&
+            docker compose down &&
+            docker compose up -d --force-recreate
+          '
+      
+      - name: Cleanup old images
+        if: success()
+        run: |
+          ssh ${{ secrets.PROD_VM_USER }}@${{ secrets.PROD_VM_HOST }} '
+            docker image prune -a -f --filter "until=720h"
+          '
+      
+      - name: Notify Slack - Success
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "🚀 Production Deployment Successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*🚀 Production Deployment Successful*\n*Version:* v${{ steps.version.outputs.version }}\n*Environment:* Production\n*URL:* https://app.sentry.ai"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      
+      - name: Notify Slack - Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "❌ Production Deployment Failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*❌ Production Deployment Failed*\n*Version:* v${{ steps.version.outputs.version }}\n*Rollback:* Initiated\n*Action Required:* Check logs immediately"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ============================================================================
+  # Post-Deployment Validation
+  # ============================================================================
+  post-deployment-validation:
+    name: Post-Deployment Validation
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    steps:
+      - name: Run smoke tests
+        run: |
+          # Test API endpoints
+          curl -f https://app.sentry.ai/health || exit 1
+          curl -f https://app.sentry.ai/api/docs || exit 1
+          
+          echo "Smoke tests passed"
+      
+      - name: Performance check
+        run: |
+          response_time=$(curl -o /dev/null -s -w '%{time_total}' https://app.sentry.ai/health)
+          if (( $(echo "$response_time > 1.0" | bc -l) )); then
+            echo "Warning: API response time is slow: ${response_time}s"
+          else
+            echo "API response time OK: ${response_time}s"
+          fi
+      
+      - name: Update monitoring
+        if: success()
+        run: |
+          echo "Deployment successful, updating monitoring dashboards..."
+          # Add Sentry release tracking, Grafana annotation, etc.
+

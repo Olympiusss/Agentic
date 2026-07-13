@@ -1,0 +1,12 @@
+# Sentry Agentic MCP Servers - Requirements
+
+# Core library
+sentry-core>=1.0.0
+
+# MCP SDK
+mcp>=0.1.0
+fastmcp>=0.1.0
+
+# Additional dependencies
+numpy>=1.26.0
+

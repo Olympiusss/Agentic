@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: sentry-agentic-dashboards
+    orgId: 1
+    folder: Sentry Agentic
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

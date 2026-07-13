@@ -1,0 +1,43 @@
+# SOC Daemon Dockerfile
+# Headless autonomous security operations service
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements + editable-install sources first for better caching.
+# requirements.txt references `-e ./deeptempo-core` and `-e ./mcp-servers`,
+# so those directories must exist at pip-install time.
+COPY requirements.txt .
+COPY deeptempo-core/ ./deeptempo-core/
+COPY mcp-servers/ ./mcp-servers/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Create non-root user for security. Note: python:3.11-slim ships a
+# built-in `daemon` user (UID 1), so we name ours `soc` to avoid collision.
+RUN useradd -m -u 1000 soc && chown -R soc:soc /app
+USER soc
+
+# Expose ports
+# 8081 - Webhook ingestion
+# 9090 - Metrics/health
+EXPOSE 8081 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:9090/health || exit 1
+
+# Default command
+CMD ["python", "-m", "daemon.main"]
