@@ -12,6 +12,19 @@ const tokens = {
     200: '#E2E8F0',
     100: '#F1F5F9',
   },
+  // Sentry Agentic brand — electric royal blue
+  brand: {
+    900: '#001A66',
+    800: '#002299',
+    700: '#0033CC',
+    600: '#0040FF',
+    500: '#1A6AFF',
+    400: '#4D9FFF',
+    300: '#80BFFF',
+    200: '#B3D9FF',
+    100: '#E6F2FF',
+  },
+  // accent for status indicators
   cyan: {
     500: '#06B6D4',
     400: '#22D3EE',
@@ -72,9 +85,9 @@ export const createM3Theme = (mode: 'light' | 'dark') => {
     palette: {
       mode,
       primary: {
-        main: tokens.cyan[500],
-        light: tokens.cyan[400],
-        dark: tokens.cyan[500],
+        main: tokens.brand[500],
+        light: tokens.brand[400],
+        dark: tokens.brand[700],
         contrastText: '#fff',
       },
       secondary: {

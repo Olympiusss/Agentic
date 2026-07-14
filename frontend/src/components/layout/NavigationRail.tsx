@@ -105,16 +105,18 @@ export default function NavigationRail({ enabledIntegrations = [], orchestratorE
           <Box
             sx={{
               width: 32,
-              height: 32,
-              borderRadius: 1.5,
-              bgcolor: 'primary.main',
+              height: 36,
+              flexShrink: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              flexShrink: 0,
             }}
           >
-            <Shield sx={{ fontSize: 20, color: 'white' }} />
+            <img
+              src="/logo.svg"
+              alt="Sentry Agentic"
+              style={{ width: 28, height: 32, filter: 'drop-shadow(0 2px 6px rgba(26,106,255,0.5))' }}
+            />
           </Box>
           {expanded && (
             <Typography
@@ -126,7 +128,10 @@ export default function NavigationRail({ enabledIntegrations = [], orchestratorE
                 letterSpacing: '-0.02em',
               }}
             >
-              Sentry Agentic SOC
+              Sentry{' '}
+              <Box component="span" sx={{ color: 'primary.main' }}>
+                Agentic
+              </Box>
             </Typography>
           )}
         </Box>
