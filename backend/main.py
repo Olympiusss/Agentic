@@ -500,7 +500,7 @@ async def startup_event():
             logger.debug("Loaded PostgreSQL connection string from secrets")
         else:
             # Set default connection string if not configured
-            default_conn = "postgresql://sentry:sentry_secure_password_change_me@localhost:5432/sentry_soc"
+            default_conn = "postgresql://deeptempo:deeptempo_secure_password_change_me@localhost:5432/sentry_agentic_soc"
             os.environ["POSTGRESQL_CONNECTION_STRING"] = default_conn
             logger.debug("Using default PostgreSQL connection string")
 

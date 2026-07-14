@@ -71,5 +71,5 @@ def get_database_url() -> str:
         return url
     return os.getenv(
         "DATABASE_URL",
-        "postgresql://sentry:sentry@localhost:5432/sentry_soc"
+        "postgresql://deeptempo:deeptempo_secure_password_change_me@localhost:5432/sentry_agentic_soc"
     )
