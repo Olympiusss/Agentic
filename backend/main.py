@@ -717,7 +717,11 @@ async def startup_event():
                                 f"Failed to connect to MCP server: {server_name}"
                             )
                 except Exception as e:
-                    logger.error(f"Error connecting to {server_name}: {e}")
+                    logger.warning(f"Failed to connect to MCP server {server_name}: {e}")
+                except BaseException as e:
+                    # CancelledError inherits BaseException, not Exception.
+                    # Don't let one MCP server timeout kill the whole startup.
+                    logger.warning(f"MCP server {server_name} cancelled/timed out at startup: {type(e).__name__}")
 
             logger.info(
                 f"MCP initialization complete: {connected_count}/{len(servers)} persistent connections"
