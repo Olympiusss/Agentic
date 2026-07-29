@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sentry.ai/schemas/coverage_matrix.schema.json",
+  "title": "SentinelOne Coverage Matrix Row",
+  "description": "One row of the Phase 2 coverage matrix (Milestone 3) -- the question-class-to-retrieval spine that is both the build backlog and the Milestone 8 regression test set. A tenant's coverage_matrix is an array of these.",
+  "type": "object",
+  "required": ["question_class", "example", "target_entity", "source_module", "retrieval_path", "priority", "status"],
+  "properties": {
+    "question_class": {
+      "type": "string",
+      "description": "The intent class this row covers, matching the taxonomy in Sentry_Agent_Task_Execution.md section 3 (e.g. 'threat_count', 'storyline_pivot', 'agent_health').",
+      "examples": ["threat_count", "host_lookup", "storyline_pivot", "agent_health", "cve_traversal"]
+    },
+    "example": {
+      "type": "array",
+      "description": "One or more example natural-language questions that map to this row -- used both for human readability and as the embedding-router's training examples in Milestone 6.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "target_entity": {
+      "type": "string",
+      "description": "The ontology entity this question is fundamentally about (e.g. Alert, Vulnerability, InventoryItem)."
+    },
+    "source_module": {
+      "type": "string",
+      "description": "The real source module/system that must answer this question -- e.g. 'SentinelOne Alerts' (not 'SentinelOne Threats', which does not exist as a distinct tool in this tenant's MCP server; see mcp_tools.md), 'Deep Visibility / PowerQuery', 'Vulnerability Management', 'Sentry internal findings'. The row must say so explicitly, per the grounding contract's 'name the source' rule.",
+      "examples": ["SentinelOne Alerts", "Deep Visibility / PowerQuery", "Vulnerability Management", "Sentry internal findings"]
+    },
+    "retrieval_path": {
+      "type": "string",
+      "description": "The canonical tool call (or short sequence) that answers this question, e.g. 'search_alerts(first=1) -> read totalCount'. Should reference a recipe in data/knowledge/sentinelone/recipes/ once Milestone 4 authors it."
+    },
+    "mitre_technique": {
+      "type": "array",
+      "description": "MITRE ATT&CK technique IDs relevant to this question class, if applicable (mainly for DV hunt rows).",
+      "items": {
+        "type": "string",
+        "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$"
+      }
+    },
+    "expected_result_shape": {
+      "type": "string",
+      "description": "What a correct answer looks like structurally, e.g. 'integer count + severity breakdown', 'list of affected endpoints with patch status'."
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["gap_closing", "high", "medium", "low"],
+      "description": "'gap_closing' marks the five hard-bound intents from the brief: threat/alert count, host lookup, storyline pivot, agent health, CVE traversal."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["not_started", "recipe_drafted", "validated", "stable"],
+      "description": "Build status of this row's retrieval path. Only 'stable' rows are usable by the router without analyst confirmation."
+    },
+    "forbidden_source": {
+      "type": "string",
+      "description": "A source that would be a wrong-source answer for this question class, if there's a known confusable one (e.g. for 'threat_count', forbidden_source is 'Sentry internal findings')."
+    },
+    "elicited_by": {
+      "type": "string",
+      "description": "Set when this row was added via the analyst-elicited-question hook rather than seeded from the tenant's modules -- who/when it was added."
+    }
+  }
+}
