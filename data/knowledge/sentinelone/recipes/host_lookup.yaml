@@ -1,0 +1,19 @@
+recipe_id: host_lookup
+intent: host_lookup
+inputs:
+- name: hostname_substring
+  type: string
+  required: true
+tool_calls:
+- tool: search_inventory_items
+  parameters:
+    filters: '{"name__contains": ["{{hostname_substring}}"]}'
+    limit: 5
+    fetch_fields: MINIMAL
+  purpose: REST-dialect substring match on endpoint name
+expected_result_shape: list of matching endpoint records (name, OS, agent status)
+validated_edge_cases:
+- case: empty_result
+  observed_behavior: real query for a nonexistent hostname returned 0 items (an empty list, not an error)
+    -- correctly classifiable as 'no matching host', not a scope/permission problem
+status: stable

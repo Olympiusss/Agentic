@@ -1,0 +1,18 @@
+recipe_id: storyline_pivot
+intent: storyline_pivot
+inputs:
+- name: storyline_id
+  type: string
+  required: true
+tool_calls:
+- tool: search_alerts
+  parameters:
+    filters: '[{"fieldId":"storylineId","filterType":"fulltext","values":["{{storyline_id}}"]}]'
+    first: 25
+  purpose: fulltext-filter alerts sharing this storylineId
+expected_result_shape: ordered list of alerts sharing the storyline
+validated_edge_cases:
+- case: empty_result
+  observed_behavior: not independently tested -- every storylineId used this run came from a real alert
+    sample, so a genuinely-empty pivot wasn't observed
+status: stable

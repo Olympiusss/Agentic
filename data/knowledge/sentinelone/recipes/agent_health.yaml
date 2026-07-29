@@ -1,0 +1,32 @@
+recipe_id: agent_health
+intent: agent_health
+inputs:
+- name: infection_status
+  type: string
+  required: false
+  default: null
+- name: asset_status
+  type: string
+  required: false
+  default: null
+tool_calls:
+- tool: search_inventory_items
+  parameters:
+    filters: '{"infectionStatus": ["{{infection_status}}"]}'
+    limit: 25
+    fetch_fields: MINIMAL
+  purpose: filter by infection state, when infection_status is given -- no separate Agents tool exists
+    in this MCP server
+- tool: search_inventory_items
+  parameters:
+    filters: '{"assetStatus": ["{{asset_status}}"]}'
+    limit: 25
+    fetch_fields: MINIMAL
+  purpose: filter by asset/connectivity status, when asset_status is given instead
+expected_result_shape: list of endpoints matching the requested health/connectivity state
+validated_edge_cases:
+- case: empty_result
+  observed_behavior: real infectionStatus=Infected query returned 2 item(s); real assetStatus=Active query
+    returned 10 item(s) -- both real filters confirmed working, an empty list means no matching endpoints,
+    not an error
+status: stable

@@ -1,0 +1,18 @@
+recipe_id: threat_detail
+intent: threat_detail
+inputs:
+- name: alert_id
+  type: string
+  required: true
+tool_calls:
+- tool: get_alert
+  parameters:
+    alert_id: '{{alert_id}}'
+  purpose: full alert record by ID
+expected_result_shape: full alert record -- severity, verdict, classification, detection source, asset,
+  storylineId
+validated_edge_cases:
+- case: empty_result
+  observed_behavior: not tested -- alert_id came from a real sample; an invalid ID's behavior (error vs
+    empty) was not exercised this pass
+status: stable

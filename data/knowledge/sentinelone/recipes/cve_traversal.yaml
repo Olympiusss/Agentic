@@ -1,0 +1,17 @@
+recipe_id: cve_traversal
+intent: cve_traversal
+inputs:
+- name: cve_id
+  type: string
+  required: true
+tool_calls:
+- tool: search_vulnerabilities
+  parameters:
+    filters: '[{"fieldId":"cveId","filterType":"string_equals","value":"{{cve_id}}"}]'
+  purpose: exact-match CVE lookup, returns affected endpoints
+expected_result_shape: list of vulnerability records for this CVE, with affected asset and patch/fix info
+validated_edge_cases:
+- case: empty_result
+  observed_behavior: real query for a nonexistent CVE returned 0 results (empty, not an error) -- classifiable
+    as 'CVE not present in this environment'
+status: stable
