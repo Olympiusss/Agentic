@@ -1,0 +1,345 @@
+generated_at: '2026-07-29T16:04:57.410229+00:00'
+purple_mcp_version: v0.7.0
+tenant:
+  identity:
+    tool_availability: no dedicated account/site/group tool in this MCP server
+    accounts:
+      '1580605217264614055': MU ||EXN ROA - Upfront - CyberVergent Ltd
+    sites:
+      '2310904665009067177': Cybervergent
+    groups:
+      '2321702683297303891': Product Engineer
+      '2334812976580299396': Brand and Marketing
+      '2321705943521559659': Admin
+    recovered_from:
+    - list_inventory_items (s1AccountId/s1SiteId/s1GroupId fields)
+    - list_vulnerabilities
+hierarchy:
+  derived_from: s1ScopePath field on endpoint inventory items
+  scope_paths_observed:
+  - MU ||EXN ROA - Upfront - CyberVergent Ltd/Cybervergent/Admin
+  - MU ||EXN ROA - Upfront - CyberVergent Ltd/Cybervergent/Brand and Marketing
+  - MU ||EXN ROA - Upfront - CyberVergent Ltd/Cybervergent/Product Engineer
+  note: s1ScopePath encodes the account->site->group nesting as a path string per SentinelOne's own convention;
+    parsing it into a structured tree is left to Milestone 2 (ontology) once more samples confirm the
+    path format consistently
+endpoints:
+  sample_size: 5
+  populated_attributes:
+  - activeCoverage
+  - adsEnabled
+  - agent
+  - alerts
+  - alertsCount
+  - architecture
+  - assetStatus
+  - awsEcsInfo
+  - category
+  - coreCount
+  - cpu
+  - detectedFromSite
+  - domain
+  - firstSeenDt
+  - gatewayIps
+  - gatewayMacs
+  - id
+  - idSecondary
+  - identity
+  - infectionStatus
+  - internalIps
+  - internalIpsV6
+  - ipAddress
+  - isAdConnector
+  - isDcServer
+  - lastActiveDt
+  - lastRebootDt
+  - lastUpdateDt
+  - macAddresses
+  - memory
+  - memoryReadable
+  - modelName
+  - name
+  - networkInterfaces
+  - os
+  - osFamily
+  - osNameVersion
+  - osUsername
+  - osVersion
+  - resourceType
+  - riskFactors
+  - s1AccountId
+  - s1AccountName
+  - s1GroupId
+  - s1GroupName
+  - s1ManagementId
+  - s1ScopeId
+  - s1ScopeLevel
+  - s1ScopePath
+  - s1ScopeType
+  - s1SiteId
+  - s1SiteName
+  - s1UpdatedAt
+  - serialNumber
+  - subCategory
+  - subnets
+  - surfaces
+  counts_by_resource_type_in_sample:
+    macOS laptop: 2
+    Windows desktop: 1
+    Windows laptop: 2
+  note: Counts are over this small discovery sample only, not a full tenant census -- re-run with a larger
+    limit for real totals once this shape is validated.
+policies:
+  state: no tool binding available in the sentinelone MCP server
+  note: misconfiguration policyId/policyGroup fields exist but refer to CSPM/IaC detection policies, not
+    SentinelOne endpoint-protection policies -- not a substitute for this step
+threats:
+  source: SentinelOne Alerts (search_alerts/list_alerts) -- no distinct Threats tool exists in this MCP
+    server; confirmed in Milestone 0
+  current_count: 385
+  schema_fields_observed:
+  - analystVerdict
+  - asset
+  - classification
+  - dataSources
+  - description
+  - detectedAt
+  - detectionSource
+  - externalId
+  - firstSeenAt
+  - id
+  - lastSeenAt
+  - name
+  - noteExists
+  - severity
+  - status
+  - storylineId
+  lifecycle_states_observed: &id002
+  - NEW
+  - RESOLVED
+  severities_observed: &id001
+  - INFO
+  analyst_verdicts_observed: &id003
+  - FALSE_POSITIVE_BENIGN
+  - UNDEFINED
+  classifications_observed: &id004
+  - MANUAL
+storylines:
+  structure: each alert node carries a storylineId field; pivoting means filtering search_alerts on that
+    storylineId (fulltext filter type) across the tenant, per the Task Execution Protocol's storyline
+    pivot procedure
+  sample_storyline_ids:
+  - c5355307-0aa5-fad0-0424-cf1bb8f1d06a
+  - c6be8a77-5121-5a36-aa80-3e5ff795b9a5
+  - c6b70fe5-962f-04b4-c048-2fd0069eb1a6
+  - c6b70fe5-962f-04b4-c048-2fd0069eb1a6
+  - c610da1d-f2f5-c7fa-626e-2445498cf650
+alerts:
+  alert_types_observed:
+  - Grub Files Manipulation
+  - MOTD Configuration Files Creation or Modification
+  - PAM Modules Updated
+  - Suspicious Package Manager Configuration Files Modification
+incidents: no distinct 'incidents' entity/tool exists in this MCP server -- Alerts is the only grouping
+  concept observed
+vulnerabilities:
+  licensed_or_enabled: true
+  current_count: unavailable (totalCount not returned by search_vulnerabilities)
+  schema_fields_observed:
+  - asset
+  - cve
+  - detected_at
+  - id
+  - last_seen_at
+  - name
+  - product
+  - scope
+  - severity
+  - software
+  - status
+  - vendor
+  severities_observed: &id005
+  - CRITICAL
+applications:
+  note: no dedicated 'applications' tool distinct from vulnerabilities/inventory observed
+identity:
+  licensed_or_enabled: false
+  sample_count: 0
+cloud:
+  licensed_or_enabled: false
+  sample_count: 0
+asset_discovery:
+  licensed_or_enabled: false
+  sample_count: 0
+deep_visibility:
+  surface: PowerQuery (confirmed in Phase 1; legacy Deep Visibility / S1QL 1.0 not used)
+  retention: not independently confirmed in this pass -- would require a query near the retention boundary,
+    which is an expensive/broad query and out of scope for this capped probe
+  window_used_for_probes:
+    start: '2026-07-28T16:04:44.457891Z'
+    end: '2026-07-29T16:04:44.457891Z'
+  event_types:
+    process:
+      valid: true
+      sample_result: 'Match Count: 1.0
+
+        Columns: 2
+
+        Rows: 1
+
+        Column Names: timestamp, message
+
+
+        Results:
+
+        Row 1: [1785281990259000000, None]'
+    network:
+      valid: true
+      sample_result: ''
+    dns:
+      valid: true
+      sample_result: 'Match Count: 1.0
+
+        Columns: 2
+
+        Rows: 1
+
+        Column Names: timestamp, message
+
+
+        Results:
+
+        Row 1: [1785282847000000000, None]'
+    file:
+      valid: true
+      sample_result: 'Match Count: 1.0
+
+        Columns: 2
+
+        Rows: 1
+
+        Column Names: timestamp, message
+
+
+        Results:
+
+        Row 1: [1785282849637000000, None]'
+    registry:
+      valid: true
+      sample_result: 'Match Count: 1.0
+
+        Columns: 2
+
+        Rows: 1
+
+        Column Names: timestamp, message
+
+
+        Results:
+
+        Row 1: [1785266698725000000, None]'
+    login:
+      valid: true
+      sample_result: ''
+enums:
+  alert_severity: *id001
+  alert_status: *id002
+  alert_analyst_verdict: *id003
+  alert_classification: *id004
+  vulnerability_severity: *id005
+tool_bindings:
+- tool: list_inventory_items
+  parameters:
+    limit: 5
+    surface: ENDPOINT
+    fetch_fields: ALL
+  purpose: sample endpoint inventory items with all fields to determine real attribute population
+- tool: list_vulnerabilities
+  parameters:
+    first: 5
+    fields: '["id", "scope"]'
+  purpose: cross-check scope sub-object for hierarchy recovery
+- tool: list_misconfigurations
+  parameters:
+    first: 5
+    fields: '["id", "scope"]'
+  purpose: cross-check scope sub-object for hierarchy recovery
+- tool: search_alerts
+  parameters:
+    first: 1
+  purpose: count-only query per search_alerts's own documented 'how many' pattern
+- tool: list_alerts
+  parameters:
+    first: 5
+  purpose: sample alerts for schema/lifecycle/storyline detail
+- tool: list_alerts
+  parameters:
+    first: 5
+    view_type: ALL
+  purpose: sample alert types/names present in this tenant
+- tool: search_vulnerabilities
+  parameters:
+    first: 1
+  purpose: count-only vulnerability query
+- tool: list_vulnerabilities
+  parameters:
+    first: 5
+  purpose: sample vulnerabilities for schema/severity
+- tool: list_inventory_items
+  parameters:
+    limit: 5
+    surface: IDENTITY
+    fetch_fields: MINIMAL
+  purpose: probe IDENTITY surface for licensed/enabled state
+- tool: list_inventory_items
+  parameters:
+    limit: 5
+    surface: CLOUD
+    fetch_fields: MINIMAL
+  purpose: probe CLOUD surface for licensed/enabled state
+- tool: list_inventory_items
+  parameters:
+    limit: 5
+    surface: NETWORK_DISCOVERY
+    fetch_fields: MINIMAL
+  purpose: probe NETWORK_DISCOVERY surface for licensed/enabled state
+- tool: get_timestamp_range
+  parameters:
+    hours: 24
+  purpose: compute a 24h probe window
+- tool: powerquery
+  parameters:
+    query: event.category = "process" | limit 1
+    start_datetime: '2026-07-28T16:04:44.457891Z'
+    end_datetime: '2026-07-29T16:04:44.457891Z'
+  purpose: probe whether event.category="process" is valid and returns data in this tenant
+- tool: powerquery
+  parameters:
+    query: event.category = "network" | limit 1
+    start_datetime: '2026-07-28T16:04:44.457891Z'
+    end_datetime: '2026-07-29T16:04:44.457891Z'
+  purpose: probe whether event.category="network" is valid and returns data in this tenant
+- tool: powerquery
+  parameters:
+    query: event.category = "dns" | limit 1
+    start_datetime: '2026-07-28T16:04:44.457891Z'
+    end_datetime: '2026-07-29T16:04:44.457891Z'
+  purpose: probe whether event.category="dns" is valid and returns data in this tenant
+- tool: powerquery
+  parameters:
+    query: event.category = "file" | limit 1
+    start_datetime: '2026-07-28T16:04:44.457891Z'
+    end_datetime: '2026-07-29T16:04:44.457891Z'
+  purpose: probe whether event.category="file" is valid and returns data in this tenant
+- tool: powerquery
+  parameters:
+    query: event.category = "registry" | limit 1
+    start_datetime: '2026-07-28T16:04:44.457891Z'
+    end_datetime: '2026-07-29T16:04:44.457891Z'
+  purpose: probe whether event.category="registry" is valid and returns data in this tenant
+- tool: powerquery
+  parameters:
+    query: event.category = "login" | limit 1
+    start_datetime: '2026-07-28T16:04:44.457891Z'
+    end_datetime: '2026-07-29T16:04:44.457891Z'
+  purpose: probe whether event.category="login" is valid and returns data in this tenant
