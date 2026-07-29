@@ -1,0 +1,26 @@
+template_id: lolbin_powershell_execution
+hunt_pattern: living_off_the_land
+mitre:
+- tactic: Execution
+  technique_id: T1059.001
+  technique_name: PowerShell
+query_source:
+  natural_language_prompt: Show me PowerShell process executions and their command lines
+  resulting_query: event.category = "process" and process.name contains "powershell" | columns event.time,
+    endpoint.name, process.name, process.cmdline | limit 5
+  purple_ai_status: purple_ai() failed systemically this session (confirmed via diagnostic probe, not
+    a phrasing issue -- see field_dictionary.yaml). This query is hand-composed from confirmed field_dictionary.yaml
+    fields as a fallback, per explicit user direction, and has NOT been generated or verified by purple_ai()
+    the documented way.
+  confidence_note: process.name and process.cmdline are confirmed fields (field_dictionary.yaml); 'contains'
+    as an operator is not independently confirmed before this run.
+default_window: PT24H
+result_cap: 5
+false_positives_observed: []
+triage_status: not independently triaged this session -- ran_without_error and result_sample below are
+  the only evidence checked
+status: experimental
+validation_result:
+  ran_without_error: true
+  error: null
+  result_sample: ''

@@ -1,0 +1,70 @@
+status: draft_pending_review
+note: 'purple_ai() failed systemically for every category this session (confirmed via a live diagnostic
+  probe using the tool''s own documented example question, not a phrasing problem here) -- per explicit
+  direction, this dictionary was built from hand-composed field probes instead of the tool''s documented
+  purple_ai -> powerquery path. Every entry is marked fields_unverified_by_purple_ai and gated status:
+  experimental, never stable, until purple_ai() is available to verify these the documented way. A field
+  name that closed the MCP connection is recorded in field_causing_connection_error rather than silently
+  retried.'
+categories:
+- category: process
+  purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
+    the tool's own documented example question; not a phrasing issue
+  fields_confirmed:
+  - event.time
+  - endpoint.name
+  - process.name
+  - process.cmdline
+  fields_unverified_by_purple_ai: true
+  field_causing_connection_error: null
+  connection_error: null
+  status: experimental
+- category: network
+  purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
+    the tool's own documented example question; not a phrasing issue
+  fields_confirmed: []
+  fields_unverified_by_purple_ai: true
+  field_causing_connection_error: null
+  connection_error: null
+  status: experimental
+- category: dns
+  purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
+    the tool's own documented example question; not a phrasing issue
+  fields_confirmed:
+  - event.time
+  - endpoint.name
+  - event.dns.request
+  fields_unverified_by_purple_ai: true
+  field_causing_connection_error: null
+  connection_error: null
+  status: experimental
+- category: file
+  purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
+    the tool's own documented example question; not a phrasing issue
+  fields_confirmed:
+  - event.time
+  - endpoint.name
+  - file.path
+  fields_unverified_by_purple_ai: true
+  field_causing_connection_error: null
+  connection_error: null
+  status: experimental
+- category: registry
+  purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
+    the tool's own documented example question; not a phrasing issue
+  fields_confirmed:
+  - event.time
+  - endpoint.name
+  - registry.keyPath
+  fields_unverified_by_purple_ai: true
+  field_causing_connection_error: null
+  connection_error: null
+  status: experimental
+- category: login
+  purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
+    the tool's own documented example question; not a phrasing issue
+  fields_confirmed: []
+  fields_unverified_by_purple_ai: true
+  field_causing_connection_error: null
+  connection_error: null
+  status: experimental
