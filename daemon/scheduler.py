@@ -121,7 +121,26 @@ class TaskScheduler:
                 ))
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Threat feed poller unavailable: {e}")
-    
+
+        # SentinelOne environment memory cache refresh — only runs when the
+        # sentinelone MCP server is configured and an environment map exists
+        # (Phase 2 Milestone 6). Cheap and local: re-reads environment_map.yaml,
+        # never queries the live tenant on its own.
+        try:
+            from services.sentinelone_environment_cache_service import (
+                SentinelOneEnvironmentCacheService,
+            )
+            if SentinelOneEnvironmentCacheService.is_enabled():
+                self._tasks.append(ScheduledTask(
+                    name="sentinelone_environment_cache_refresh",
+                    func=self._run_sentinelone_environment_cache_refresh,
+                    interval=SentinelOneEnvironmentCacheService.refresh_interval_seconds(),
+                    enabled=True,
+                    run_on_start=True,
+                ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"SentinelOne environment cache refresh unavailable: {e}")
+
     def _init_services(self):
         """Initialize required services."""
         try:
@@ -419,6 +438,29 @@ class TaskScheduler:
             return
         poller = ThreatFeedPoller()
         return await poller.run_once()
+
+    async def _run_sentinelone_environment_cache_refresh(self):
+        """Refresh the SentinelOne environment memory cache (Phase 2
+        Milestone 6). Reads environment_map.yaml only; does not call the
+        live tenant."""
+        try:
+            from services.sentinelone_environment_cache_service import (
+                SentinelOneEnvironmentCacheService,
+            )
+        except Exception as e:
+            logger.warning(f"SentinelOne environment cache unavailable: {e}")
+            return
+        if not SentinelOneEnvironmentCacheService.is_enabled():
+            return
+        try:
+            cache = SentinelOneEnvironmentCacheService.refresh()
+            logger.info(
+                f"SentinelOne environment cache refreshed: "
+                f"{len(cache.sites)} site(s), {len(cache.groups)} group(s)"
+            )
+            return cache
+        except FileNotFoundError as e:
+            logger.warning(f"SentinelOne environment cache refresh skipped: {e}")
 
     async def _run_health_check(self):
         """Run system health check."""

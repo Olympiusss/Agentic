@@ -240,3 +240,12 @@ splunk_test_data.json
 *_test.json
 enrichment_result_*.json
 claude_analysis_*.txt
+
+# SentinelOne router/retrieval-store build artifacts (Phase 2 Milestone 6):
+# large, engine-specific embedding blobs deterministically regenerated from
+# the committed YAML sources by scripts/build_sentinelone_router_index.py.
+# Not hand-reviewable content, so kept out of git like a build cache.
+data/knowledge/sentinelone/routing/coverage_matrix_index.json
+data/knowledge/sentinelone/routing/route_log.jsonl
+data/knowledge/sentinelone/retrieval_store/chunks_index.json
+data/knowledge/sentinelone/environment_cache_state.json

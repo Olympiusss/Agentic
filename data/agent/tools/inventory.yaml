@@ -1,0 +1,36 @@
+mcp_server: sentinelone
+entity: InventoryItem
+note: >-
+  This is also the agent-health source -- no separate "Agents" tool exists in
+  this MCP server (confirmed Milestone 0/2). Health questions ("which agents
+  are offline", "show me infected endpoints") filter on the nested agent
+  object (upToDate, networkStatus, isInfected) or assetStatus, on this same
+  entity.
+tools:
+  - tool: search_inventory_items
+    when_to_use:
+      - 'Host lookup by name/IP -- "what do we know about host <hostname>".'
+      - "Agent health filtering -- offline, outdated, or infected endpoints."
+    when_not_to_use:
+      - >-
+        Do not use Alerts/Vulnerabilities filter syntax here -- this tool
+        takes a REST-style dict-of-lists (e.g. name__contains, lastActiveDt__between,
+        id__in, field__nin), not {fieldId, filterType} objects. Confusing the
+        two dialects is a common failure mode.
+    parameters: 'filters (REST dict, see note above), limit, skip, fetch_fields'
+    example: 'search_inventory_items(filters={"name__contains": ["web-01"]})'
+    differs_from:
+      alerts.search_alerts: >-
+        Different filter dialect entirely (REST dict-of-lists here vs
+        {fieldId, filterType} objects on Alerts/Vulnerabilities/
+        Misconfigurations). Do not carry a filter shape from one to the
+        other.
+  - tool: list_inventory_items
+    when_to_use:
+      - Basic listing, optionally scoped by surface (ENDPOINT/CLOUD/IDENTITY/NETWORK_DISCOVERY).
+      - Confirming whether an optional module (Identity, Cloud, Network Discovery) is licensed/enabled at all -- probe with a small limit and check for 0 results (Milestone 1 method).
+    parameters: 'limit (1-1000, default 50), skip, surface, fetch_fields (default MINIMAL)'
+    example: 'list_inventory_items(limit=5, surface=IDENTITY, fetch_fields=MINIMAL) -- probed in Milestone 1, confirmed 0 items (not licensed)'
+  - tool: get_inventory_item
+    when_to_use: ['Lookup by a known item_id.']
+    parameters: 'item_id (required), fetch_fields (MINIMAL|STANDARD|ALL, default ALL)'

@@ -1,0 +1,29 @@
+mcp_server: sentinelone
+entity: null
+note: >-
+  Requires PURPLEMCP_VT_API_KEY, not currently configured in
+  mcp-config.json's sentinelone server env block -- these 7 tools are present
+  in the schema but will error if called. Not needed for any gap-closing
+  intent. Do not route to these unless the key is confirmed configured; if a
+  question needs domain/hash/IP/URL reputation, state that VirusTotal/GTI
+  enrichment is not currently configured on this tenant rather than calling
+  and surfacing a raw error.
+tools:
+  - tool: threat_intel_by_domain
+    parameters: 'domain (required)'
+  - tool: threat_intel_by_hash
+    parameters: 'hash_value (required, MD5/SHA1/SHA256)'
+  - tool: threat_intel_by_ip
+    parameters: 'ip_address (required)'
+  - tool: threat_intel_by_url
+    parameters: 'url (required)'
+  - tool: threat_intel_get_file_behavior
+    parameters: 'hash_value (required), sandbox (optional)'
+    when_not_to_use: ['Do not call repeatedly with the same params -- returns identical data.']
+  - tool: threat_intel_get_file_relationships
+    parameters: >-
+      hash_value (required), relationship_type (required:
+      contacted_domains|contacted_ips|contacted_urls|similar_files|
+      execution_parents|bundled_files|compressed_parents|overlay_parents)
+  - tool: threat_intel_search
+    parameters: 'query (required, VT Intelligence query syntax -- requires Premium/Enterprise key)'
