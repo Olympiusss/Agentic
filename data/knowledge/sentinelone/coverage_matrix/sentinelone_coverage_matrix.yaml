@@ -31,6 +31,18 @@ rows:
   - what do we know about host <hostname>
   - show me the endpoint with IP <ip>
   - is this laptop online
+  # Analyst-elicited additions (Milestone 6): the router's own validation
+  # (scripts/validate_sentinelone_router.py) found this row's original 3
+  # examples too semantically sparse for reliable embedding separation from
+  # agent_health/vulnerability_general/dv_hunt on realistic paraphrases --
+  # measurably below the other four gap-closing classes' paraphrase
+  # confidence. Adding these per the matrix's own analyst-elicited-question
+  # hook (Milestone 3) measurably improved match confidence on held-out
+  # paraphrases (0.58-0.70 -> 0.64-0.82 in local testing) without touching
+  # the three canonical examples above.
+  - look up host <hostname> for me
+  - pull up everything on the machine named <hostname>
+  - what details do we have on this endpoint
   target_entity: InventoryItem
   source_module: Inventory
   retrieval_path: 'search_inventory_items(filters={"name__contains": [...]})  or get_inventory_item(item_id) for a known ID'

@@ -1,0 +1,66 @@
+mcp_server: sentinelone
+entity: Alert
+note: >-
+  This is the real threat source. There is no distinct "Threats" tool in this
+  MCP server -- confirmed live in Milestone 0. Every "how many threats" /
+  "any active threats" question binds here, never to Sentry's internal
+  findings store.
+tools:
+  - tool: search_alerts
+    when_to_use:
+      - Count questions ("how many threats/alerts") -- set first=1, read totalCount.
+      - "Any filtered alert query -- by severity, status, time window, or storylineId (fulltext)."
+      - "Storyline pivot -- fulltext-filter on storylineId to pull every alert sharing a chain."
+    when_not_to_use:
+      - Looking up one alert you already have the ID for -- use get_alert instead (cheaper, no filter overhead).
+      - Endpoint/agent-health questions -- that's InventoryItem (inventory.yaml), not Alerts.
+    parameters: >-
+      filters (JSON array of {fieldId, filterType, value|values, isNegated?}),
+      first, after, view_type, fields. Filter types: string_equals/string_in,
+      boolean_equals/boolean_in, long_equals/long_in, datetime_range (needs
+      Unix ms via iso_to_unix_timestamp), fulltext. Max 50 filters, 100
+      values/filter.
+    example: 'search_alerts(first=1) -> read totalCount for "how many threats exist"'
+    differs_from:
+      sentry_findings.list_findings: >-
+        Different server entirely. search_alerts is live SentinelOne
+        detection data; list_findings is Sentry's own internal pipeline
+        output. A "how many threats" question is always search_alerts, never
+        list_findings -- this exact confusion (answering "0" from Sentry
+        findings instead of the real SentinelOne count) is the failure this
+        phase exists to fix.
+      deep_visibility.powerquery: >-
+        Alerts are discrete, already-triaged detections with severity/verdict
+        fields. Deep Visibility is raw telemetry (process/network/dns/file/
+        registry/login events) -- use it to hunt for behavior, not to count
+        existing alerts.
+  - tool: list_alerts
+    when_to_use:
+      - Basic listing with only an assignment filter (ALL/ASSIGNED_TO_ME/UNASSIGNED/MY_TEAM).
+    when_not_to_use:
+      - Any severity/status/time/storyline filtering -- no such params exist here; use search_alerts.
+    parameters: 'first (1-100, default 10), after (cursor), view_type, fields (JSON array string)'
+    example: 'list_alerts(first=5, view_type=ALL) to sample recent alert types/names'
+    differs_from:
+      search_alerts: 'search_alerts adds real filtering; list_alerts is unfiltered pagination only.'
+  - tool: get_alert
+    when_to_use:
+      - "You already have a specific alert_id and need full detail -- severity, status, analystVerdict, storylineId, ticketId, assignee."
+    parameters: 'alert_id (required)'
+    example: 'get_alert(alert_id="...") for "tell me more about alert <id>"'
+    differs_from:
+      search_alerts: 'get_alert is a direct lookup by ID; search_alerts is a filtered search over many alerts.'
+  - tool: get_alert_notes
+    when_to_use: ['Analyst notes/annotations on one alert.']
+    parameters: 'alert_id (required)'
+  - tool: get_alert_history
+    when_to_use: ['Audit trail (status/assignment changes) for one alert.']
+    parameters: 'alert_id (required), pagination params'
+  - tool: get_alert_investigation_report
+    when_to_use: ["Purple AI's auto-generated investigation report for one alert (distinct from purple_ai(), which answers open-ended natural-language questions)."]
+    parameters: 'alert_id (required)'
+    differs_from:
+      deep_visibility.purple_ai: >-
+        This returns a pre-generated report tied to one specific alert.
+        purple_ai() is a free-form natural-language Q&A/PowerQuery-generation
+        tool with no alert binding.

@@ -1,0 +1,30 @@
+mcp_server: sentry-findings
+entity: Finding
+note: >-
+  THE CONTRAST CASE. This is a **different MCP server** than sentinelone --
+  Sentry's own internal detection pipeline output (mcp-servers/servers/
+  sentry_findings.py), backed by this app's own database, not the
+  SentinelOne tenant. It is the correct source for exactly one intent class:
+  explicitly Sentry-internal questions ("what has Sentry flagged", "show me
+  our own findings for this case"). Reaching for this server on any
+  SentinelOne-shaped question (threats, endpoints, vulnerabilities,
+  storylines) reproduces the exact original failure this whole phase exists
+  to fix: the agent answered "0 findings" from here when asked how many
+  threats existed, instead of querying SentinelOne.
+tools:
+  - tool: list_findings
+    when_to_use: ['Only when the question is explicitly about Sentry''s own findings/detections, not the SentinelOne tenant.']
+    when_not_to_use:
+      - 'NEVER for "how many threats" or any SentinelOne-sourced question -- that is alerts.search_alerts.'
+    parameters: 'severity, data_source, cluster_id, min_anomaly_score, limit (default 50) -- all optional filters'
+    differs_from:
+      alerts.search_alerts: >-
+        Different server, different data entirely: this app's own findings
+        store vs. live SentinelOne Alerts. A "how many threats" question is
+        always search_alerts. If asked "what has Sentry flagged," name this
+        source explicitly and never conflate it with a SentinelOne answer.
+  - tool: get_finding
+    when_to_use: ['Lookup of one Sentry-internal finding by ID, when the question is explicitly about Sentry''s own pipeline output.']
+    parameters: 'finding_id (required)'
+    differs_from:
+      alerts.get_alert: 'get_alert is live SentinelOne data; get_finding is this app''s own internal record.'

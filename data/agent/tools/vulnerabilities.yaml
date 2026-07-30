@@ -1,0 +1,35 @@
+mcp_server: sentinelone
+entity: Vulnerability
+note: Confirmed licensed and populated in this tenant (Milestone 1).
+tools:
+  - tool: search_vulnerabilities
+    when_to_use:
+      - 'CVE traversal -- "which endpoints are affected by CVE-2024-1234" -- filter cveId with string_equals.'
+      - "Filtered vulnerability queries -- by severity, exploit maturity, asset criticality."
+    when_not_to_use:
+      - INT-style range filters -- not supported (STRING/BOOLEAN filter types only). cveEpssScore only takes string_in with a range string like "0.5-0.75".
+    parameters: >-
+      filters, first, after, fields. Field IDs are flattened camelCase
+      (cveId, cveExploitMaturity, cveExploitedInTheWild, cveKevAvailable,
+      softwareName, assetCriticality) -- not dotted paths like cve.id.
+    example: 'search_vulnerabilities(filters=[{"fieldId":"cveId","filterType":"string_equals","value":"CVE-2024-1234"}])'
+    differs_from:
+      cve_database.cve_search_by_id: >-
+        search_vulnerabilities tells you whether/where a CVE exists *in this
+        tenant's assets*. cve_search_by_id is a general CVE-database lookup
+        (cve-search.org) with CVSS/CPE/CWE detail, independent of whether
+        anything in this tenant is actually affected.
+  - tool: list_vulnerabilities
+    when_to_use: ['Basic unfiltered listing.']
+    parameters: 'first, after, fields'
+    differs_from:
+      search_vulnerabilities: 'No totalCount aggregate confirmed returned here (Milestone 1 finding) -- for counts, use search_vulnerabilities.'
+  - tool: get_vulnerability
+    when_to_use: ['Lookup by a known vulnerability_id.']
+    parameters: 'vulnerability_id (required)'
+  - tool: get_vulnerability_notes
+    when_to_use: ['Analyst notes on one vulnerability.']
+    parameters: 'vulnerability_id (required)'
+  - tool: get_vulnerability_history
+    when_to_use: ['Audit trail for one vulnerability.']
+    parameters: 'vulnerability_id (required), pagination params'

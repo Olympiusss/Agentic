@@ -1,0 +1,22 @@
+mcp_server: sentinelone
+entity: null
+note: >-
+  Separate from VirusTotal/GTI threat intelligence (threat_intelligence.yaml)
+  and from search_vulnerabilities (vulnerabilities.yaml). No API key
+  required. Source: cve-search.org (CIRCL.LU).
+tools:
+  - tool: cve_database_status
+    when_to_use: ['Checking CVE database freshness/health before trusting a lookup.']
+    parameters: 'none'
+  - tool: cve_search_by_id
+    when_to_use: ['General CVE detail -- CVSS v2/v3, CPEs, CWE, references -- independent of whether this tenant is affected.']
+    parameters: 'cve_id (required)'
+    differs_from:
+      vulnerabilities.search_vulnerabilities: >-
+        This answers "what is CVE-2024-1234". search_vulnerabilities answers
+        "is CVE-2024-1234 present in our environment, and where". A CVE
+        traversal question needs the latter first; this tool only adds detail
+        once a CVE is already identified.
+  - tool: cve_search_by_vendor
+    when_to_use: ['Listing CVEs for a vendor/product. Omitting product lists available products for that vendor.']
+    parameters: 'vendor (required), product (optional)'

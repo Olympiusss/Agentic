@@ -1,0 +1,26 @@
+mcp_server: sentinelone
+entity: Misconfiguration
+note: >-
+  Probed live in Milestone 2 (search_misconfigurations(first=1)): not
+  confirmed populated in this tenant. If asked about cloud/CSPM/IaC
+  misconfigurations, state that this was probed and found empty/unconfirmed
+  -- do not claim "no misconfigurations exist," and do not skip probing again
+  if the analyst wants a fresh check.
+tools:
+  - tool: search_misconfigurations
+    when_to_use: ['Filtered CSPM/IaC/secret-scanning queries, if re-confirmed populated on this tenant.']
+    when_not_to_use: ['Do not assume this returns data without re-checking -- last probe was empty.']
+    parameters: >-
+      filters, first, after, view_type
+      (ALL|CLOUD|KUBERNETES|IDENTITY|INFRASTRUCTURE_AS_CODE|
+      ADMISSION_CONTROLLER|OFFENSIVE_SECURITY|SECRET_SCANNING), fields. Same
+      flattened camelCase convention as Vulnerabilities (assetName,
+      secretHash, requestUserName). No INT filters. secretValidity only
+      supports boolean_in; secretHash/secretId only support fulltext/
+      fulltext_in.
+  - tool: list_misconfigurations
+    when_to_use: ['Basic listing.']
+    parameters: 'first, after, view_type, fields'
+  - tool: get_misconfiguration
+    when_to_use: ['Lookup by ID.']
+    parameters: 'misconfiguration_id (required)'
