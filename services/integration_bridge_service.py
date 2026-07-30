@@ -43,7 +43,11 @@ class IntegrationBridgeService:
         "ip-geolocation": "ip-geolocation-server",
         # EDR/XDR
         "crowdstrike": "crowdstrike-server",
-        "sentinelone": "sentinelone-server",
+        # "sentinelone" is intentionally absent: its MCP server is the
+        # official `purple-mcp` binary, declared statically in
+        # mcp-config.json (not a `tools.<id>` module this bridge can
+        # launch). Routing it through here pointed at a nonexistent
+        # `tools.sentinelone` module and silently failed to start.
         "carbon-black": "carbon-black-server",
         "microsoft-defender": "microsoft-defender-server",
         # SIEM

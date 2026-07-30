@@ -83,7 +83,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/Sentinel-One/purple-mcp.git",
+        "git+https://github.com/Sentinel-One/purple-mcp.git@v0.7.0",
         "purple-mcp",
         "--mode",
         "stdio"
@@ -91,7 +91,8 @@
       "env": {
         "PURPLEMCP_CONSOLE_TOKEN": "${SENTINELONE_API_TOKEN}",
         "PURPLEMCP_CONSOLE_BASE_URL": "${SENTINELONE_CONSOLE_URL}"
-      }
+      },
+      "_note": "Pinned to v0.7.0 (latest tag) so the server doesn't silently change on an upstream push to main. Purple MCP only supports tokens scoped to a single Account or Site, which is why no separate PURPLEMCP_SDL_CONSOLE_SITE_IDS scoping is needed here -- SENTINELONE_API_TOKEN's own scope already restricts it to one site."
     },
     "azure-sentinel": {
       "command": "C:/Program Files/nodejs/npx.cmd",

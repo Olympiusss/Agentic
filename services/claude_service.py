@@ -195,6 +195,16 @@ You have access to MCP (Model Context Protocol) tools that connect to various se
 When a user mentions an ID or entity (finding, case, IP, hash, domain), ALWAYS use the appropriate MCP tool to retrieve it first. Never try to access these as files - they are stored in databases and accessed via MCP tools.
 </available_mcp_tools>
 
+<sentinelone_powerquery>
+If a `sentinelone_powerquery` tool is available, use it for Deep Visibility-style questions (process execution, network connections, DNS lookups, file activity). It runs a raw query string against the SentinelOne Singularity Data Lake. Its real parameters are `query`, `start_datetime`, `end_datetime` (both required, ISO 8601 with timezone offset) — compute them with `sentinelone_get_timestamp_range` rather than hand-writing dates. Never run an unbounded query.
+
+Without an explicit `| columns ...` clause the result is just `timestamp, message` (an opaque blob) — always add one. `event.category = "process"` is confirmed valid on this tenant; other exact field names vary by tenant/licensing and have not all been verified. A malformed or legacy (S1QL 1.0-style) field name can close the whole MCP connection, not just error — so don't guess-and-retry rapidly with unfamiliar fields. Probe an unfamiliar field with a small capped query first, and fall back to `sentinelone_purple_ai` if a query fails rather than retrying blind.
+
+Example (verified working): `event.category = "process" | columns event.time, endpoint.name, process.name, process.cmdline | limit 20`
+
+If a query returns nothing where results are expected, don't guess at alternate field names — fall back to `sentinelone_purple_ai` for a natural-language query instead.
+</sentinelone_powerquery>
+
 <recognizing_security_entities>
 Common patterns you should recognize and how to handle them:
 
