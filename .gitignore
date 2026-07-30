@@ -254,3 +254,9 @@ data/knowledge/sentinelone/environment_cache_state.json
 # enum value the ontology's tables couldn't decode, for growing them from
 # real observations. Runtime log, not curated knowledge.
 data/knowledge/sentinelone/interpretation/uncatalogued_enum_values.jsonl
+
+# SentinelOne coverage harness scratch output (Phase 2 Milestone 8): a
+# throwaway dev-run copy written by tests/sentinelone_coverage_harness.py's
+# __main__ block. The real, curated report is committed at
+# data/knowledge/sentinelone/coverage_matrix/accuracy_report.md.
+tests/_last_harness_run.md
