@@ -64,7 +64,7 @@ Source: SentinelOne Alerts · Client: CyberVergent Ltd · Window: all time · Re
 | threat_count | gap_closing | hard_bound | PASS | PASS | PASS | PASS | ok |
 | host_lookup | gap_closing | hard_bound | PASS | PASS | PASS | PASS | ok |
 | storyline_pivot | gap_closing | hard_bound | PASS | PASS | PASS | PASS | ok |
-| agent_health | gap_closing | hard_bound | PASS | PASS | PASS | PASS | ok (see caveat below) |
+| agent_health | gap_closing | hard_bound | PASS | PASS | PASS | PASS | ok (offline semantics confirmed, see follow-up below) |
 | cve_traversal | gap_closing | hard_bound | PASS | PASS | PASS | PASS | ok |
 | threat_detail | high | routed | PASS | PASS | PASS | PASS | ok |
 | vulnerability_general | high | routed | PASS | PASS | PASS | PASS | ok |
@@ -100,6 +100,10 @@ Source: SentinelOne Alerts · Client: CyberVergent Ltd · Window: n/a (point loo
 vulnerability_general: "what are our critical vulnerabilities"
 4923 critical vulnerabilities on record.
 Source: Vulnerability Management · Client: CyberVergent Ltd · Window: all time · Results: 4923
+
+agent_health: "which agents are offline"
+0 of 53 endpoint(s) are not connected (agent.networkStatus != 'connected').
+Source: Inventory · Client: CyberVergent Ltd · Window: all time · Results: 0
 ```
 
 ## Tuning applied before this run reached 12/12 (per the brief's "for each
@@ -137,17 +141,57 @@ section for the full account. That fix landed on Milestone 7's branch,
 before this harness was built, and is reflected in this run's real
 `vulnerability_general` answer above (4,923 critical, not 1).
 
-## Known caveat (not a scoring failure, flagged for honesty)
+## Post-report follow-up: agent_health "offline" confirmed, and a real correction
 
-`agent_health`'s harness run filters `assetStatus=Active` (a value M4
-confirmed live) rather than an "offline"/"inactive" value, because no
-such value has been confirmed live in this tenant yet — `assetStatus` has
-no `enum_ref` in the ontology (M2 recorded it as an unconstrained string).
-The recipe and retrieval mechanism are proven correct; the *specific*
-enum value for "which agents are offline" is not yet independently
-confirmed the way `infectionStatus=Infected` and `assetStatus=Active`
-were in Milestone 4. Worth a small follow-up live probe before the
-capabilities phase leans on this row for that exact phrasing.
+The report above originally flagged a caveat: `agent_health`'s harness run
+filtered `assetStatus=Active` (a value M4 confirmed live) rather than an
+"offline" value, since none had been confirmed live yet. A follow-up live
+investigation resolved this — and found a real, more significant defect
+than expected:
+
+- **`search_inventory_items` rejects both `"networkStatus"` and
+  `"agent.networkStatus"` as filter fields** — confirmed live, real 400
+  error: `filter: dict_values(['agent.networkStatus']): Unknown field`.
+  The nested `agent` object (which carries the real connectivity signal,
+  `networkStatus`) is readable but **not server-filterable** at all in
+  this tool.
+- `assetStatus` (what the recipe used as an "offline" proxy) is a
+  **different axis entirely** — management/lifecycle state, not network
+  connectivity. Using it to answer "which agents are offline" was a
+  mistaken proxy, not a real answer, even though it executed without
+  error.
+- Live-sampled all 53 real endpoints (`list_inventory_items`,
+  `fetch_fields=ALL`): **every single one** has `agent.networkStatus:
+  "connected"`, `agent.isInfected: false`, `agent.upToDate: true` right
+  now. This tenant genuinely has zero offline/infected/outdated agents at
+  present — "which agents are offline" has a real, honest answer of
+  **zero**, not an untested code path.
+- The literal string value for the disconnected counterpart
+  ("disconnected", inferred from SentinelOne's own `networkStatus`/
+  `networkStatusTitle` naming convention on the observed `"connected"`
+  value) has **not** been independently observed live in this tenant —
+  not reported as confirmed, per the no-fabrication rule.
+
+**Corrected:** `recipes/agent_health.yaml` (the connectivity-specific
+tool_call now fetches broadly and classifies `agent.networkStatus`
+client-side, with the confirmed 400 error recorded as a `permission_error`
+edge case so nothing re-attempts that filter spelling), the coverage
+matrix's `agent_health` row `retrieval_path`, the ontology (`assetStatus`
+now has a real `enum_ref` with its one confirmed value, `Active`, and
+`InventoryItem`'s tool binding documents the filterability constraint),
+and this harness's `agent_health` executor (now fetches all 53 endpoints
+and classifies client-side — see the real answer above: "0 of 53
+endpoint(s) are not connected"). Re-ran the full harness after the fix:
+still 12/12.
+
+## Post-report follow-up: purple_ai() re-checked
+
+Still down as of this check (same live probe as Milestones 5-7, the
+tool's own documented example question): `AuthZ error` from the
+SentinelOne backend, unchanged from the last check. The `experimental`
+gating on `data/knowledge/sentinelone/dv_cookbook/` and the hand-composed-
+PowerQuery workaround remain in force. Re-check again before any future
+DV work or before promoting `dv_hunt` past `not_started`.
 
 ## Acceptance checklist (brief's own Milestone 8 criteria)
 

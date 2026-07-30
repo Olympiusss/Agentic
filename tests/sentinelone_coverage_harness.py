@@ -197,22 +197,36 @@ async def _evaluate_executable_row(
             accurate = isinstance(rows_, list)
 
         elif qc == "agent_health":
+            # "Which agents are offline" needs agent.networkStatus, which is
+            # confirmed NOT server-filterable (400: Unknown field on both
+            # "networkStatus" and "agent.networkStatus") -- fetch broadly
+            # and classify client-side instead of proxying via assetStatus,
+            # which is a different (lifecycle) axis. See
+            # recipes/agent_health.yaml's Milestone 8 correction.
             result = await call(
                 session,
                 log,
-                "search_inventory_items",
-                {"filters": json.dumps({"assetStatus": ["Active"]}), "limit": 25},
+                "list_inventory_items",
+                {"limit": 100, "surface": "ENDPOINT", "fetch_fields": "ALL"},
                 question,
             )
             items = result.get("data", []) if isinstance(result, dict) else []
+            offline = [
+                i
+                for i in items
+                if (i.get("agent") or {}).get("networkStatus") != "connected"
+            ]
             answer = grounding.format_grounded_answer(
-                body=f"{len(items)} endpoint(s) with assetStatus=Active.",
+                body=(
+                    f"{len(offline)} of {len(items)} endpoint(s) are not "
+                    "connected (agent.networkStatus != 'connected')."
+                ),
                 source_module=source_module,
                 tenant="CyberVergent Ltd",
                 window="all time",
-                result_count=len(items),
+                result_count=len(offline),
             )
-            accurate = isinstance(items, list)
+            accurate = isinstance(items, list) and len(items) > 0
 
         elif qc == "cve_traversal":
             vulns = await call(

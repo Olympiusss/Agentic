@@ -215,6 +215,7 @@ entities:
   - name: assetStatus
     type: string
     population: always_present
+    enum_ref: asset_status
   - name: awsEcsInfo
     type: object
     population: usually_present
@@ -365,13 +366,31 @@ entities:
   - name: surfaces
     type: array
     population: always_present
+  # Re-sampled live Milestone 8 (list_inventory_items, first=50,
+  # fetch_fields=ALL/MINIMAL): assetStatus is a management/lifecycle axis,
+  # not network connectivity -- confirmed distinct from the nested
+  # agent.networkStatus field (real value "connected", 50/50 sampled; the
+  # tenant has zero currently-offline/infected/outdated agents, so
+  # "disconnected" has not been independently observed). Confirmed live
+  # that search_inventory_items rejects "networkStatus"/"agent.networkStatus"
+  # as filters (400: Unknown field) -- agent.* is readable but not
+  # server-filterable; "which agents are offline" requires a broad fetch
+  # plus client-side classification, not a server filter. See
+  # recipes/agent_health.yaml.
+  enums:
+    asset_status:
+      Active: Active
   tool_bindings:
   - tool: list_inventory_items
     purpose: basic listing, surface-filtered
   - tool: get_inventory_item
     purpose: lookup by ID
   - tool: search_inventory_items
-    purpose: REST-dialect filtered search (different filter shape than Alerts/Vulnerabilities/Misconfigurations)
+    purpose: >-
+      REST-dialect filtered search (different filter shape than Alerts/Vulnerabilities/Misconfigurations).
+      Confirmed live Milestone 8 -- only top-level fields like assetStatus/infectionStatus are
+      filterable -- nested agent.* fields (networkStatus, isInfected, upToDate) are readable
+      but rejected as filters (400 Unknown field).
   in_scope: true
 - entity: Storyline
   description: Attack-chain grouping referenced by Alert.storylineId. No dedicated tool exists for it

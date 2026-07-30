@@ -9,6 +9,12 @@ inputs:
   type: string
   required: false
   default: null
+- name: connectivity_filter
+  type: string
+  required: false
+  default: null
+  # one of: connected, disconnected -- NOT server-filterable, see tool_calls
+  # below. Client applies this against agent.networkStatus after fetching.
 tool_calls:
 - tool: search_inventory_items
   parameters:
@@ -16,17 +22,50 @@ tool_calls:
     limit: 25
     fetch_fields: MINIMAL
   purpose: filter by infection state, when infection_status is given -- no separate Agents tool exists
-    in this MCP server
+    in this MCP server. Server-side filter confirmed working (Milestone 4).
 - tool: search_inventory_items
   parameters:
     filters: '{"assetStatus": ["{{asset_status}}"]}'
     limit: 25
     fetch_fields: MINIMAL
-  purpose: filter by asset/connectivity status, when asset_status is given instead
-expected_result_shape: list of endpoints matching the requested health/connectivity state
+  purpose: filter by assetStatus (a management/lifecycle axis -- confirmed NOT the same
+    thing as network connectivity, see corrected note below), when asset_status is given
+- tool: list_inventory_items
+  parameters:
+    limit: 100
+    surface: ENDPOINT
+    fetch_fields: ALL
+  purpose: >-
+    for "which agents are offline"/connectivity questions specifically: fetch broadly and
+    classify agent.networkStatus client-side. Corrected Milestone 8 -- confirmed live that
+    search_inventory_items rejects both "networkStatus" and "agent.networkStatus" as
+    filter fields (API error 400, code 4000010, "filter: dict_values([...]): Unknown
+    field") -- there is NO server-side filter for connectivity state in this tool.
+    assetStatus is a different axis (management/lifecycle, not online/offline) and must
+    not be used as an "offline" proxy -- the recipe's original assetStatus-based
+    approach to "which agents are offline" was a mistaken proxy, not a real answer.
+expected_result_shape: list of endpoints matching the requested health/connectivity state.
+  For connectivity specifically, this is a client-side filter over agent.networkStatus,
+  not a server-side query result.
 validated_edge_cases:
 - case: empty_result
   observed_behavior: real infectionStatus=Infected query returned 2 item(s); real assetStatus=Active query
     returned 10 item(s) -- both real filters confirmed working, an empty list means no matching endpoints,
     not an error
+- case: empty_result
+  observed_behavior: 'Corrected Milestone 8: live-sampled 50/50 real endpoints via
+    list_inventory_items(fetch_fields=ALL) and every single one has
+    agent.networkStatus="connected", agent.isInfected=false, agent.upToDate=true right
+    now -- this tenant genuinely has zero offline/infected/outdated agents at present.
+    "Which agents are offline" therefore has a real, honest answer of zero, not an
+    untested code path. The exact string value for the disconnected counterpart
+    ("disconnected", inferred from SentinelOne''s networkStatus/networkStatusTitle
+    naming convention seen on the connected value) has NOT been independently observed
+    live in this tenant -- do not report it as confirmed.'
+- case: permission_error
+  observed_behavior: 'Corrected Milestone 8: search_inventory_items(filters={"networkStatus":
+    [...]}) and filters={"agent.networkStatus": [...]} both return a real live 400
+    Validation Error ("Unknown field") -- confirmed this is a genuine API constraint,
+    not a transient failure. Do not retry with a different filter spelling; use the
+    client-side classification tool_call above instead.'
 status: stable
