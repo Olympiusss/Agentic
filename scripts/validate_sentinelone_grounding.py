@@ -119,7 +119,7 @@ def main() -> None:
         result_count=count,
     )
     print(answer)
-    for part in ["Source:", "Tenant:", "Window:", "Results:"]:
+    for part in ["Source:", "Client:", "Window:", "Results:"]:
         check(f"grounded answer contains '{part}'", part in answer)
     check("grounded answer's Results matches the real live count", str(count) in answer)
 

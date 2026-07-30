@@ -84,7 +84,15 @@ rows:
   - show me infected endpoints
   target_entity: InventoryItem
   source_module: Inventory
-  retrieval_path: 'search_inventory_items(filters={"assetStatus": [...]}) or filtering on the nested agent object (upToDate, networkStatus, isInfected) -- no separate "Agents" tool exists in this MCP server, confirmed Milestone 0/2'
+  # Corrected Milestone 8: confirmed live that search_inventory_items rejects
+  # both "networkStatus" and "agent.networkStatus" as filters (400: Unknown
+  # field) -- the nested agent object (upToDate, networkStatus, isInfected)
+  # is readable but NOT server-filterable. infectionStatus/assetStatus are
+  # the only real server-side filters (confirmed M4); assetStatus is a
+  # management/lifecycle axis, not connectivity -- "offline" specifically
+  # requires fetching broadly and classifying agent.networkStatus
+  # client-side. See recipes/agent_health.yaml's corrected tool_calls.
+  retrieval_path: 'search_inventory_items(filters={"infectionStatus"|"assetStatus": [...]}) for infection/lifecycle state; list_inventory_items(fetch_fields=ALL) + client-side classification of agent.networkStatus for connectivity ("offline") specifically -- no separate "Agents" tool exists in this MCP server, confirmed Milestone 0/2'
   expected_result_shape: list of endpoints filtered by health/connectivity state
   priority: gap_closing
   # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/

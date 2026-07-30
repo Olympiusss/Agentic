@@ -199,7 +199,16 @@ def format_grounding_line(
     empty_classification: Optional[EmptyResultClassification] = None,
     empty_reason: Optional[str] = None,
 ) -> str:
-    """The mandatory grounding line every factual answer ends with."""
+    """The mandatory grounding line every factual answer ends with.
+
+    Label is "Client:" (not "Tenant:") to match
+    data/agent/protocol/task_execution_protocol.md section 6 and the
+    Milestone 0 regression fixture (tests/fixtures/threat_count_source.md)
+    verbatim -- both use "Client," the SOC's term for the tenant/
+    organization being monitored. Caught by Milestone 8's regression-fixture
+    run: an earlier draft of this function said "Tenant:", which would have
+    failed the fixture's exact expected_answer_shape.
+    """
     if result_count is not None:
         results_part = str(result_count)
     elif empty_classification is not None:
@@ -209,7 +218,7 @@ def format_grounding_line(
     else:
         raise ValueError("must provide result_count or empty_classification")
     return (
-        f"Source: {source_module} · Tenant: {tenant} · "
+        f"Source: {source_module} · Client: {tenant} · "
         f"Window: {window} · Results: {results_part}"
     )
 

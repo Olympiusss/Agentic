@@ -28,7 +28,7 @@ non-negotiable on every answer, from the moment routing lands anywhere:
 Every factual answer ends with:
 
 ```
-Source: <system/module> · Tenant: <name> · Window: <range> · Results: <count>
+Source: <system/module> · Client: <name> · Window: <range> · Results: <count>
 ```
 
 For an empty result, replace the count with its classification, e.g.
