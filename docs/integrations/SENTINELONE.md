@@ -31,10 +31,14 @@ Namespaced as `sentinelone_<tool>` in the agent's tool list:
 - Alerts: `list_alerts` (GraphQL cursor pagination: `first`, `after`, `view_type` in `ALL|ASSIGNED_TO_ME|UNASSIGNED|MY_TEAM`), `search_alerts`, `get_alert`, `get_alert_notes`, `get_alert_history`, `get_alert_investigation_report`
 - Vulnerabilities: `list_vulnerabilities`, `search_vulnerabilities`, `get_vulnerability`, `get_vulnerability_notes`, `get_vulnerability_history`
 - Misconfigurations: `list_misconfigurations`, `search_misconfigurations`, `get_misconfiguration`, `get_misconfiguration_notes`, `get_misconfiguration_history`
-- Inventory: `list_inventory_items`, `get_inventory_item`, `search_inventory_items`
+- Inventory: `list_inventory_items`, `get_inventory_item`, `search_inventory_items` — response shape is `{"data": [...], "pagination": {...}}`, **not** the GraphQL `{"edges": [...]}` shape the other tools use
 - External threat intel (CVE, VirusTotal/GTI) — only if `PURPLEMCP_VT_API_KEY` is also set
 
 Tool names, parameters, and this list were confirmed by a live MCP handshake (`initialize` → `list_tools`) against this tenant's `sentinelone` server (v0.7.0), not taken from upstream docs alone — upstream docs describe `powerquery(query, start_time, end_time)`, but the real tool schema on this server requires `start_datetime` / `end_datetime` (ISO 8601, timezone offset required). Re-verify with `list_tools` if `purple-mcp` is ever upgraded.
+
+**Count/pagination fields are not consistently cased across tools** — confirmed live: `search_alerts`/`list_alerts` return **camelCase** (`totalCount`, `pageInfo`), while `search_vulnerabilities`/`list_vulnerabilities`/`search_misconfigurations`/`list_misconfigurations` return **snake_case** (`total_count`, `page_info` with `has_next_page`). Checking the wrong casing silently reads as "field not returned," not an error, and has caused a real undercount in practice (a "1 total vulnerability" finding that was actually 37,863 — see `data/knowledge/sentinelone/mcp_tools.md`'s "Critical corrections" section for the full account).
+
+**`agent.networkStatus`/`isInfected`/`upToDate` on Inventory items are readable but not server-filterable** — `search_inventory_items` rejects both `"networkStatus"` and `"agent.networkStatus"` as filter fields with a real `400: Unknown field` error. Only top-level fields like `assetStatus`/`infectionStatus` are filterable; connectivity-specific questions ("which agents are offline") require fetching broadly (`fetch_fields=ALL`) and classifying `agent.networkStatus` client-side instead.
 
 ## Deep Visibility via PowerQuery
 
@@ -56,9 +60,14 @@ confirmed against this tenant (live-tested, not just read from docs):
 - **A malformed or legacy (S1QL 1.0-style) field name does not just return
   an error — it can close the MCP connection outright**, ending the whole
   session. Don't guess-and-retry rapidly with unfamiliar field names in
-  the same conversation; if a query fails, treat it as a hard stop and
-  fall back to `sentinelone_purple_ai` or a narrower, previously-confirmed
-  query instead of trying variations blind.
+  the same conversation; if a query fails, treat it as a hard stop rather
+  than trying variations blind.
+- **`sentinelone_purple_ai` is confirmed down on this tenant** as a live,
+  recurring finding (last re-checked 2026-07-30; returns an `AuthZ error`
+  from the SentinelOne backend). It is the documented way to get a
+  PowerQuery string generated from natural language rather than
+  hand-composing one — do not fall back to it expecting it to work until
+  this is independently re-confirmed working.
 - Always compute the window with `sentinelone_get_timestamp_range` (or
   `sentinelone_iso_to_unix_timestamp` for conversions) rather than hand-writing
   ISO strings, and always pass both `start_datetime` and `end_datetime` —
@@ -78,6 +87,18 @@ PowerQuery field set can vary by tenant/module licensing. Before relying on
 a new field name, probe it with a small, capped query
 (`... | columns <field> | limit 1`) rather than assuming it exists, given
 the crash-on-bad-field behavior above.
+
+## Full knowledge base
+
+A much richer, live-verified world model for this tenant exists in
+`data/knowledge/sentinelone/` (tool inventory, environment map, ontology,
+coverage matrix, retrieval recipes, DV field dictionary/hunt templates,
+an embedding-based router, and a grounding/interpretation layer) and
+`data/agent/` (distilled context, per-tool guidance, the task execution
+protocol). None of it is wired into `services/claude_service.py`'s live
+system prompt or tool-dispatch loop yet — that's the next phase's job —
+but consult it before improvising a query or assuming a fact about this
+tenant. Accuracy report: `data/knowledge/sentinelone/coverage_matrix/accuracy_report.md`.
 
 ## Verifying end-to-end
 
