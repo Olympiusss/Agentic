@@ -122,8 +122,10 @@ entities:
     purpose: Purple AI auto-investigation report for one alert
   in_scope: true
 - entity: Vulnerability
-  description: SentinelOne vulnerability finding. Confirmed licensed and populated in this tenant (Milestone
-    1).
+  description: SentinelOne vulnerability finding. Confirmed licensed and populated in this tenant.
+    Corrected Milestone 7 -- Milestone 1 concluded this entity was near-empty (population checked
+    via search_vulnerabilities' totalCount field, camelCase, which this tool does not return); the
+    real count, read from the correct total_count (snake_case) key, is 37,863 records.
   attributes:
   - name: asset
     type: object
@@ -167,8 +169,15 @@ entities:
     relationship: affects
     via_attribute: asset
   enums:
+    # Re-sampled live Milestone 7 via per-severity total_count queries
+    # (search_vulnerabilities filtered by severity, first=1 each) now that
+    # the real record count (37,863) is known. INFO returned 0 -- unlike
+    # Alert severity, INFO is not a populated tier for Vulnerability here.
     vulnerability_severity:
       CRITICAL: CRITICAL
+      HIGH: HIGH
+      MEDIUM: MEDIUM
+      LOW: LOW
   tool_bindings:
   - tool: search_vulnerabilities
     purpose: filtered search

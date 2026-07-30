@@ -158,7 +158,20 @@ incidents: no distinct 'incidents' entity/tool exists in this MCP server -- Aler
   concept observed
 vulnerabilities:
   licensed_or_enabled: true
-  current_count: unavailable (totalCount not returned by search_vulnerabilities)
+  # Corrected Milestone 7: the original 'unavailable' conclusion checked the
+  # wrong key name (totalCount, camelCase, copying the Alerts convention).
+  # search_vulnerabilities/list_vulnerabilities actually return total_count
+  # (snake_case) -- confirmed live. Re-checked by severity filter for a
+  # per-value breakdown (four separate first=1 count-only queries):
+  current_count: 37863
+  current_count_by_severity:
+    CRITICAL: 4890
+    HIGH: 15461
+    MEDIUM: 14950
+    LOW: 907
+  count_field_note: 'search_vulnerabilities/list_vulnerabilities return total_count/page_info
+    (snake_case), not totalCount/pageInfo (camelCase) like Alerts -- see mcp_tools.md''s
+    "Critical corrections" section.'
   schema_fields_observed:
   - asset
   - cve
@@ -172,8 +185,14 @@ vulnerabilities:
   - software
   - status
   - vendor
+  # Corrected Milestone 7: re-sampled by severity filter now that the real
+  # count (37,863) is known -- INFO and a literal "NONE" probe both
+  # returned 0, only these four severities are actually populated.
   severities_observed: &id005
   - CRITICAL
+  - HIGH
+  - MEDIUM
+  - LOW
 applications:
   note: no dedicated 'applications' tool distinct from vulnerabilities/inventory observed
 identity:
