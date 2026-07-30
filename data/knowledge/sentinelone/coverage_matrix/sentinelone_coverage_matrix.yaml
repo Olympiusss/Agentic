@@ -22,7 +22,13 @@ rows:
   retrieval_path: 'search_alerts(first=1) -> read totalCount (the tool''s own documented count-only pattern)'
   expected_result_shape: integer count, optionally with a severity breakdown from a follow-up sample
   priority: gap_closing
-  status: validated
+  # Corrected Milestone 7: recipes/threat_count_by_window.yaml has carried
+  # `status: stable` since Milestone 4 (real live runs) -- this row's own
+  # status field was never bumped past 'validated' to match. 'stable' is
+  # this schema's terminal state ("only 'stable' rows are usable ... without
+  # analyst confirmation") and is what services/sentinelone_grounding_service.py's
+  # refusal gate actually checks.
+  status: stable
   forbidden_source: Sentry internal findings store
   # Regression fixture: tests/fixtures/threat_count_source.md
 
@@ -48,7 +54,10 @@ rows:
   retrieval_path: 'search_inventory_items(filters={"name__contains": [...]})  or get_inventory_item(item_id) for a known ID'
   expected_result_shape: single endpoint record with OS, agent status, last-active time, hierarchy (site/group)
   priority: gap_closing
-  status: recipe_drafted
+  # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
+  # has carried `status: stable` since Milestone 4's live validation run; this
+  # row's own status field was never bumped to match.
+  status: stable
   forbidden_source: Sentry internal findings store
 
 - question_class: storyline_pivot
@@ -62,7 +71,10 @@ rows:
   mitre_technique: []
   expected_result_shape: ordered list of alerts sharing the storyline, with affected hosts and techniques
   priority: gap_closing
-  status: recipe_drafted
+  # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
+  # has carried `status: stable` since Milestone 4's live validation run; this
+  # row's own status field was never bumped to match.
+  status: stable
   forbidden_source: Sentry internal findings store
 
 - question_class: agent_health
@@ -75,7 +87,10 @@ rows:
   retrieval_path: 'search_inventory_items(filters={"assetStatus": [...]}) or filtering on the nested agent object (upToDate, networkStatus, isInfected) -- no separate "Agents" tool exists in this MCP server, confirmed Milestone 0/2'
   expected_result_shape: list of endpoints filtered by health/connectivity state
   priority: gap_closing
-  status: recipe_drafted
+  # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
+  # has carried `status: stable` since Milestone 4's live validation run; this
+  # row's own status field was never bumped to match.
+  status: stable
   forbidden_source: Sentry internal findings store
 
 - question_class: cve_traversal
@@ -87,7 +102,10 @@ rows:
   retrieval_path: 'search_vulnerabilities(filters=[{"fieldId":"cveId","filterType":"string_equals","value":"CVE-..."}])'
   expected_result_shape: list of affected endpoints with patch/fix availability
   priority: gap_closing
-  status: recipe_drafted
+  # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
+  # has carried `status: stable` since Milestone 4's live validation run; this
+  # row's own status field was never bumped to match.
+  status: stable
   forbidden_source: Sentry internal findings store
 
 # --- Everything else the tenant's real tool surface supports ---
@@ -101,7 +119,10 @@ rows:
   retrieval_path: 'get_alert(alert_id) (+ get_alert_notes / get_alert_history / get_alert_investigation_report as needed)'
   expected_result_shape: full alert record -- severity, verdict, classification, detection source, asset, storylineId
   priority: high
-  status: recipe_drafted
+  # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
+  # has carried `status: stable` since Milestone 4's live validation run; this
+  # row's own status field was never bumped to match.
+  status: stable
   forbidden_source: Sentry internal findings store
 
 - question_class: vulnerability_general
@@ -113,7 +134,10 @@ rows:
   retrieval_path: search_vulnerabilities/list_vulnerabilities filtered by severity/status
   expected_result_shape: list of vulnerabilities with CVE/EPSS/exploit-maturity detail
   priority: high
-  status: recipe_drafted
+  # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
+  # has carried `status: stable` since Milestone 4's live validation run; this
+  # row's own status field was never bumped to match.
+  status: stable
   forbidden_source: Sentry internal findings store
 
 - question_class: dv_hunt

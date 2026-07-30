@@ -114,16 +114,30 @@ threats:
   - severity
   - status
   - storylineId
+  # Re-sampled Milestone 7 (list_alerts, first=50, view_type=ALL): the
+  # original 5-item M1 discovery sample badly undercounted this space.
+  # Still not proven exhaustive at n=50 of 385+ total alerts.
   lifecycle_states_observed: &id002
   - NEW
+  - IN_PROGRESS
   - RESOLVED
   severities_observed: &id001
   - INFO
+  - LOW
+  - MEDIUM
+  - HIGH
+  - CRITICAL
   analyst_verdicts_observed: &id003
-  - FALSE_POSITIVE_BENIGN
   - UNDEFINED
+  - FALSE_POSITIVE_BENIGN
+  - FALSE_POSITIVE_UNDEFINED
+  - TRUE_POSITIVE_UNDEFINED
+  - TRUE_POSITIVE_BENIGN
+  - TRUE_POSITIVE_BENIGN_BUT_SUSPICIOUS
   classifications_observed: &id004
   - MANUAL
+  - MALWARE
+  - RANSOMWARE
 storylines:
   structure: each alert node carries a storylineId field; pivoting means filtering search_alerts on that
     storylineId (fulltext filter type) across the tenant, per the Task Execution Protocol's storyline

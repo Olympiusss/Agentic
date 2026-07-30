@@ -249,3 +249,8 @@ data/knowledge/sentinelone/routing/coverage_matrix_index.json
 data/knowledge/sentinelone/routing/route_log.jsonl
 data/knowledge/sentinelone/retrieval_store/chunks_index.json
 data/knowledge/sentinelone/environment_cache_state.json
+
+# SentinelOne interpretation-layer runtime log (Phase 2 Milestone 7): every
+# enum value the ontology's tables couldn't decode, for growing them from
+# real observations. Runtime log, not curated knowledge.
+data/knowledge/sentinelone/interpretation/uncatalogued_enum_values.jsonl
