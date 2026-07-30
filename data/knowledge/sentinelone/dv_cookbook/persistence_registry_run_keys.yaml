@@ -1,0 +1,40 @@
+template_id: persistence_registry_run_keys
+hunt_pattern: persistence
+mitre:
+- tactic: Persistence
+  technique_id: T1547.001
+  technique_name: Registry Run Keys / Startup Folder
+query_source:
+  natural_language_prompt: Show me registry modifications to Run/RunOnce autostart keys
+  resulting_query: event.category = "registry" and registry.keyPath contains "Run" | columns event.time,
+    endpoint.name, registry.keyPath | limit 5
+  purple_ai_status: purple_ai() failed systemically this session (confirmed via diagnostic probe, not
+    a phrasing issue -- see field_dictionary.yaml). This query is hand-composed from confirmed field_dictionary.yaml
+    fields as a fallback, per explicit user direction, and has NOT been generated or verified by purple_ai()
+    the documented way.
+  confidence_note: registry.keyPath is a confirmed field (field_dictionary.yaml).
+default_window: PT24H
+result_cap: 5
+false_positives_observed: []
+triage_status: not independently triaged this session -- ran_without_error and result_sample below are
+  the only evidence checked
+status: experimental
+validation_result:
+  ran_without_error: true
+  error: null
+  result_sample: 'Match Count: 5.0
+
+    Columns: 3
+
+    Rows: 5
+
+    Column Names: event.time, endpoint.name, registry.keyPath
+
+
+    Results:
+
+    Row 1: [1785274312747, ''CYV-CA-LPT-023'', ''MACHINE\\SOFTWARE\\Classes\\PackagedCom\\Package\\Microsoft.MicrosoftOfficeHub_19.2607.54031.0_x64__8wekyb3d8bbwe\\Server\\0\\RuntimeBehavior'']
+
+    Row 2: [1785274312747, ''CYV-CA-LPT-023'', ''MACHINE\\SOFTWARE\\Classes\\PackagedCom\\Package\\Microsoft.MicrosoftOfficeHub_19.2607.54031.0_x64__8wekyb3d8bbwe\\Server\\1\\RuntimeBehavior'']
+
+    Row 3: [1785266684788, ''CYV-CA-LPT-080'', ''USER\\S-1-12-1-1161988089-1263532014-1947358608-3098118811\\Software\\Microsoft\\W'

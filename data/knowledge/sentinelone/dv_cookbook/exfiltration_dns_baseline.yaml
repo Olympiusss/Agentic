@@ -1,0 +1,50 @@
+template_id: exfiltration_dns_baseline
+hunt_pattern: exfiltration
+mitre:
+- tactic: Exfiltration
+  technique_id: T1048
+  technique_name: Exfiltration Over Alternative Protocol
+- tactic: Command and Control
+  technique_id: T1071.004
+  technique_name: DNS
+query_source:
+  natural_language_prompt: Show me recent DNS requests
+  resulting_query: event.category = "dns" | columns event.time, endpoint.name, event.dns.request | limit
+    5
+  purple_ai_status: purple_ai() failed systemically this session (confirmed via diagnostic probe, not
+    a phrasing issue -- see field_dictionary.yaml). This query is hand-composed from confirmed field_dictionary.yaml
+    fields as a fallback, per explicit user direction, and has NOT been generated or verified by purple_ai()
+    the documented way.
+  confidence_note: This is a coarse DNS-activity baseline, not a refined DNS-tunneling detector -- no
+    string-length or entropy function was confirmed in this tenant's PowerQuery dialect, which is what
+    a real DNS-tunneling detector needs (abnormally long/high-entropy subdomains). Refinement is future
+    work once that syntax is confirmed.
+default_window: PT24H
+result_cap: 5
+false_positives_observed: []
+triage_status: not independently triaged this session -- ran_without_error and result_sample below are
+  the only evidence checked
+status: experimental
+validation_result:
+  ran_without_error: true
+  error: null
+  result_sample: 'Match Count: 5.0
+
+    Columns: 3
+
+    Rows: 5
+
+    Column Names: event.time, endpoint.name, event.dns.request
+
+
+    Results:
+
+    Row 1: [1785274431177, ''CYV-CA-LPT-041'', ''aad.cs.dds.microsoft.com'']
+
+    Row 2: [1785274418159, ''CYV-CA-LPT-041'', ''aad.cs.dds.microsoft.com'']
+
+    Row 3: [1785274399571, ''CYV-CA-LPT-041'', ''aad.cs.dds.microsoft.com'']
+
+    Row 4: [1785274386745, ''CYV-CA-LPT-041'', ''aad.cs.dds.microsoft.com'']
+
+    Row 5: [1785274383141, ''CYV-CA-LPT-041'', ''oauthaccountmanager.googleapis.com'']'

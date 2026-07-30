@@ -10,9 +10,20 @@ tool_calls:
     filters: '[{"fieldId":"storylineId","filterType":"fulltext","values":["{{storyline_id}}"]}]'
     first: 25
   purpose: fulltext-filter alerts sharing this storylineId
-expected_result_shape: ordered list of alerts sharing the storyline
+- tool: powerquery
+  parameters:
+    query: event.category = "process" and src.process.storyline.id = "{{storyline_id}}" | limit 25
+    start_datetime: '{{window_start}}'
+    end_datetime: '{{window_end}}'
+  purpose: 'DV sweep: field ''src.process.storyline.id'' confirmed to correlate storylineId directly on
+    process events -- repeat per category (network/dns/file/registry/login) for a full sweep, each independently
+    confirmed first'
+expected_result_shape: ordered list of alerts sharing the storyline; plus Deep Visibility events sharing
+  the same storylineId across endpoints
 validated_edge_cases:
 - case: empty_result
   observed_behavior: not independently tested -- every storylineId used this run came from a real alert
     sample, so a genuinely-empty pivot wasn't observed
+- case: empty_result
+  observed_behavior: direct storylineId field confirmed; endpoint-window fallback ran_ok=True
 status: stable
