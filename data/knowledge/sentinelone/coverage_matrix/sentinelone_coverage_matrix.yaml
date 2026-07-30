@@ -1,0 +1,165 @@
+status: draft_pending_review
+note: >-
+  Generated for Milestone 3 by synthesizing Milestones 0-2's already-verified
+  facts (data/knowledge/sentinelone/mcp_tools.md, environment_map.yaml,
+  ontology/sentinelone_ontology.yaml) -- no new live tenant queries were run
+  for this milestone. Each row's `status` reflects whether its retrieval_path
+  was actually executed live in an earlier milestone ("validated") or is
+  only described/planned so far ("recipe_drafted"/"not_started"). Milestone 4
+  turns each row into an actually-validated, parametrised recipe.
+rows:
+
+# --- Gap-closing set (hard-bound per the brief; no router discretion once
+# Milestone 6 wires the router) ---
+
+- question_class: threat_count
+  example:
+  - how many threats exist
+  - how many alerts this week
+  - any active threats right now on this tenant
+  target_entity: Alert
+  source_module: SentinelOne Alerts
+  retrieval_path: 'search_alerts(first=1) -> read totalCount (the tool''s own documented count-only pattern)'
+  expected_result_shape: integer count, optionally with a severity breakdown from a follow-up sample
+  priority: gap_closing
+  status: validated
+  forbidden_source: Sentry internal findings store
+  # Regression fixture: tests/fixtures/threat_count_source.md
+
+- question_class: host_lookup
+  example:
+  - what do we know about host <hostname>
+  - show me the endpoint with IP <ip>
+  - is this laptop online
+  target_entity: InventoryItem
+  source_module: Inventory
+  retrieval_path: 'search_inventory_items(filters={"name__contains": [...]})  or get_inventory_item(item_id) for a known ID'
+  expected_result_shape: single endpoint record with OS, agent status, last-active time, hierarchy (site/group)
+  priority: gap_closing
+  status: recipe_drafted
+  forbidden_source: Sentry internal findings store
+
+- question_class: storyline_pivot
+  example:
+  - reconstruct the attack chain for storyline <id>
+  - what else happened on this storyline
+  - show me the full chain for this alert
+  target_entity: Storyline
+  source_module: SentinelOne Alerts
+  retrieval_path: 'read storylineId from an Alert, then search_alerts(filters=[{"fieldId":"storylineId","filterType":"fulltext","values":[id]}])'
+  mitre_technique: []
+  expected_result_shape: ordered list of alerts sharing the storyline, with affected hosts and techniques
+  priority: gap_closing
+  status: recipe_drafted
+  forbidden_source: Sentry internal findings store
+
+- question_class: agent_health
+  example:
+  - which agents are offline
+  - are there any outdated or unhealthy agents
+  - show me infected endpoints
+  target_entity: InventoryItem
+  source_module: Inventory
+  retrieval_path: 'search_inventory_items(filters={"assetStatus": [...]}) or filtering on the nested agent object (upToDate, networkStatus, isInfected) -- no separate "Agents" tool exists in this MCP server, confirmed Milestone 0/2'
+  expected_result_shape: list of endpoints filtered by health/connectivity state
+  priority: gap_closing
+  status: recipe_drafted
+  forbidden_source: Sentry internal findings store
+
+- question_class: cve_traversal
+  example:
+  - which endpoints are affected by CVE-2024-1234
+  - is this CVE present in our environment
+  target_entity: Vulnerability
+  source_module: Vulnerability Management
+  retrieval_path: 'search_vulnerabilities(filters=[{"fieldId":"cveId","filterType":"string_equals","value":"CVE-..."}])'
+  expected_result_shape: list of affected endpoints with patch/fix availability
+  priority: gap_closing
+  status: recipe_drafted
+  forbidden_source: Sentry internal findings store
+
+# --- Everything else the tenant's real tool surface supports ---
+
+- question_class: threat_detail
+  example:
+  - tell me more about alert <id>
+  - what triggered this detection
+  target_entity: Alert
+  source_module: SentinelOne Alerts
+  retrieval_path: 'get_alert(alert_id) (+ get_alert_notes / get_alert_history / get_alert_investigation_report as needed)'
+  expected_result_shape: full alert record -- severity, verdict, classification, detection source, asset, storylineId
+  priority: high
+  status: recipe_drafted
+  forbidden_source: Sentry internal findings store
+
+- question_class: vulnerability_general
+  example:
+  - what are our critical vulnerabilities
+  - list unresolved vulnerabilities on production servers
+  target_entity: Vulnerability
+  source_module: Vulnerability Management
+  retrieval_path: search_vulnerabilities/list_vulnerabilities filtered by severity/status
+  expected_result_shape: list of vulnerabilities with CVE/EPSS/exploit-maturity detail
+  priority: high
+  status: recipe_drafted
+  forbidden_source: Sentry internal findings store
+
+- question_class: dv_hunt
+  example:
+  - find living-off-the-land binaries spawned from Microsoft Word
+  - are there any reverse SSH tunnels from public IPs
+  - show me PowerShell processes that connected to external IPs
+  target_entity: 'DeepVisibilityEvent (not yet formalized as an ontology entity -- Milestone 5''s DV cookbook does this)'
+  source_module: Deep Visibility / PowerQuery
+  retrieval_path: 'purple_ai(natural-language question) -> generated PowerQuery string -> powerquery(query, start_datetime, end_datetime), run exactly as generated -- never hand-composed, per the tool''s own documented instructions (data/knowledge/sentinelone/mcp_tools.md)'
+  mitre_technique: []
+  expected_result_shape: varies by hunt pattern; MITRE tagging happens per-template in Milestone 5, not at this row's level
+  priority: medium
+  status: not_started
+
+- question_class: identity_security
+  example:
+  - are there any risky privileged accounts
+  - show lateral movement paths
+  target_entity: IdentitySecurity
+  source_module: none -- not licensed/enabled in this tenant
+  retrieval_path: 'not available (confirmed Milestone 1/2 via list_inventory_items(surface=IDENTITY), 0 items returned)'
+  expected_result_shape: "state the module is not licensed/enabled for this tenant, not an empty security posture"
+  priority: low
+  status: not_started
+
+- question_class: activity_audit
+  example:
+  - who changed this policy
+  - what admin actions happened this week
+  target_entity: 'ActivityLogEntry (no tool binding exists in this MCP server)'
+  source_module: none -- no tool exists
+  retrieval_path: no Activities/Audit Log tool exists anywhere in this MCP server's 33-tool inventory (data/knowledge/sentinelone/mcp_tools.md)
+  expected_result_shape: "state plainly that no retrieval path exists in this tool surface; do not improvise a query"
+  priority: low
+  status: not_started
+
+- question_class: cloud_misconfiguration
+  example:
+  - are there any exposed S3 buckets
+  - show cloud posture misconfigurations
+  target_entity: Misconfiguration
+  source_module: 'none -- probed live in Milestone 2 (search_misconfigurations(first=1)), not confirmed populated in this tenant'
+  retrieval_path: search_misconfigurations/list_misconfigurations, if re-confirmed populated
+  expected_result_shape: "state that Misconfigurations was probed and found empty/unconfirmed in this tenant, not that no misconfigurations exist"
+  priority: low
+  status: not_started
+
+- question_class: sentry_internal
+  example:
+  - what has Sentry flagged
+  - show me our own findings for this case
+  target_entity: 'Finding (Sentry''s own internal entity -- not part of the SentinelOne ontology)'
+  source_module: 'Sentry internal findings store (the sentry-findings MCP server -- a different server than sentinelone)'
+  retrieval_path: sentry-findings_list_findings / sentry-findings_get_finding
+  expected_result_shape: findings from Sentry's own pipeline, explicitly labelled as Sentry-internal
+  priority: high
+  status: not_started
+  # This is the one row where the "forbidden" source for every other row
+  # above IS the correct answer -- the control case, not a SentinelOne
+  # question. No forbidden_source set here on purpose.
