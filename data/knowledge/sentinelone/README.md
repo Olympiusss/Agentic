@@ -1,0 +1,14 @@
+# SentinelOne knowledge artifacts
+
+Grounded world model for the connected SentinelOne tenant, built per `Sentry_AgenticSOC_Build_Brief_for_Claude.md`. Everything here is derived from live tool calls against the tenant, never invented. Layout:
+
+| Path | Populated by | Contents |
+|---|---|---|
+| `mcp_tools.md` | Milestone 0 (this pass) | Full inventory of the 33 tools the `sentinelone` MCP server exposes, with real parameter schemas and verified/unverified status per tool. |
+| `environment_map.yaml` | Milestone 1 | What exists in the tenant: hierarchy, endpoints, policies, alerts/storylines, vulnerabilities/applications, optional modules, the Deep Visibility profile, enums, and the tool used per item. |
+| `ontology/` | Milestone 2 | Entities, real attributes (with population noted), relationships as edges, decoded enums, lifecycle states, per-entity tool bindings — generated from `environment_map.yaml`. |
+| `coverage_matrix/` | Milestone 3 | The question-class → retrieval-path spine: question class, example, target entity, source module, retrieval path, MITRE technique, expected result shape, priority, status. Doubles as the Milestone 8 test set. |
+| `recipes/` | Milestone 4 | Parametrised, validated retrieval recipes (intent, inputs, tool call sequence, expected result shape), tagged `stable`/`experimental`. |
+| `dv_cookbook/` | Milestone 5 | Deep Visibility / PowerQuery field dictionary, MITRE-tagged hunt templates, and the storyline pivot recipe. |
+
+Each subdirectory is currently empty except for this README — populated milestone by milestone, each requiring its own acceptance check before starting, per the build brief's sequencing rule. Do not hand-author content into these directories ahead of the milestone that's supposed to generate it from real tenant data.

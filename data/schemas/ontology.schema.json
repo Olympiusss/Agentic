@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sentry.ai/schemas/ontology.schema.json",
+  "title": "SentinelOne Ontology Entity",
+  "description": "One entity in the tenant-derived SentinelOne ontology (Phase 2, Milestone 2). Generated only from data/knowledge/sentinelone/environment_map.yaml -- never fabricated. A tenant's ontology.yaml is an array of these.",
+  "type": "object",
+  "required": ["entity", "attributes", "tool_bindings"],
+  "properties": {
+    "entity": {
+      "type": "string",
+      "description": "Entity name as it actually appears in this tenant's data (e.g. Alert, Vulnerability, Misconfiguration, InventoryItem, Storyline).",
+      "examples": ["Alert", "Vulnerability", "InventoryItem"]
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line description of what this entity represents in this tenant."
+    },
+    "attributes": {
+      "type": "array",
+      "description": "Real attributes observed on this entity, with population noted -- not the full documented field list if some fields never occur in this tenant.",
+      "items": {
+        "type": "object",
+        "required": ["name", "population"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Attribute name as returned by the tool (e.g. severity, analystVerdict, storylineId)."
+          },
+          "type": {
+            "type": "string",
+            "description": "Observed JSON type (string, integer, boolean, object, array)."
+          },
+          "population": {
+            "type": "string",
+            "enum": ["always_present", "usually_present", "rarely_present", "never_observed"],
+            "description": "How often this attribute actually carries a value in this tenant's data, per Milestone 1 discovery -- not assumed from the API schema alone."
+          },
+          "enum_ref": {
+            "type": "string",
+            "description": "Name of an entry in this entity's enums map, if this attribute's values are enumerated."
+          }
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "description": "Edges to other entities, e.g. Alert -> Asset, Vulnerability -> Asset, Alert -> Storyline.",
+      "items": {
+        "type": "object",
+        "required": ["target_entity", "relationship"],
+        "properties": {
+          "target_entity": {
+            "type": "string"
+          },
+          "relationship": {
+            "type": "string",
+            "description": "Name of the relationship, e.g. 'affects', 'belongs_to_storyline', 'assigned_to'."
+          },
+          "via_attribute": {
+            "type": "string",
+            "description": "The attribute on this entity that carries the foreign reference (e.g. storylineId, assetId)."
+          }
+        }
+      }
+    },
+    "enums": {
+      "type": "object",
+      "description": "Decoded enum tables for this entity's enumerated attributes. Keys are enum names referenced from attributes[].enum_ref; values are the real, observed set of codes mapped to human-readable labels -- not the full documented range if some values never occur here.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    },
+    "lifecycle_states": {
+      "type": "array",
+      "description": "Ordered or graph-like lifecycle states this entity moves through (e.g. NEW -> IN_PROGRESS -> RESOLVED), if applicable.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tool_bindings": {
+      "type": "array",
+      "description": "Which MCP tools answer questions about this entity, and for what purpose.",
+      "items": {
+        "type": "object",
+        "required": ["tool", "purpose"],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "MCP tool name as listed in data/knowledge/sentinelone/mcp_tools.md (e.g. search_alerts, get_vulnerability)."
+          },
+          "purpose": {
+            "type": "string",
+            "description": "What this tool call is for with respect to this entity, e.g. 'lookup by ID', 'filtered search', 'count-only query'."
+          }
+        }
+      }
+    },
+    "in_scope": {
+      "type": "boolean",
+      "default": true,
+      "description": "False if this entity comes from a generic decomposition but is not actually present/licensed in this tenant -- kept for future reference, excluded from current routing."
+    },
+    "reviewed_by": {
+      "type": "string",
+      "description": "Analyst sign-off identifier/date, required before this entity is frozen into a versioned ontology release."
+    }
+  }
+}

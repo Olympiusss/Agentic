@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sentry.ai/schemas/recipe.schema.json",
+  "title": "SentinelOne Retrieval Recipe",
+  "description": "A single validated, parametrised retrieval recipe (Phase 2, Milestone 4) -- the exact tool call sequence that answers one coverage-matrix row. Every recipe must be validated against the live tenant before being tagged 'stable'.",
+  "type": "object",
+  "required": ["recipe_id", "intent", "inputs", "tool_calls", "expected_result_shape", "status"],
+  "properties": {
+    "recipe_id": {
+      "type": "string",
+      "description": "Stable identifier, e.g. 'threat_count_by_window'."
+    },
+    "intent": {
+      "type": "string",
+      "description": "The question_class from the coverage matrix this recipe implements."
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Named parameters this recipe accepts from the caller (e.g. time window, hostname, CVE ID).",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string"},
+          "required": {"type": "boolean", "default": true},
+          "default": {"description": "Default value if not required."}
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "description": "Ordered sequence of MCP tool calls that implement this recipe. Tool names and parameters must match data/knowledge/sentinelone/mcp_tools.md's real, verified schemas -- not invented parameter names.",
+      "items": {
+        "type": "object",
+        "required": ["tool", "parameters"],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "MCP tool name, e.g. 'search_alerts', 'powerquery', 'purple_ai'."
+          },
+          "parameters": {
+            "type": "object",
+            "description": "Parameter template for this call. Values may reference this recipe's inputs by name (e.g. '{{hostname}}') or a prior tool_calls[] step's output (e.g. '{{steps[0].storylineId}}')."
+          },
+          "purpose": {
+            "type": "string",
+            "description": "Why this call exists in the sequence, e.g. 'resolve storylineId before the DV sweep'."
+          }
+        }
+      }
+    },
+    "expected_result_shape": {
+      "type": "string",
+      "description": "What a correct result looks like structurally."
+    },
+    "validated_edge_cases": {
+      "type": "array",
+      "description": "Edge cases this recipe has actually been run against on the live tenant, and what happened -- not assumed.",
+      "items": {
+        "type": "object",
+        "required": ["case", "observed_behavior"],
+        "properties": {
+          "case": {
+            "type": "string",
+            "enum": ["empty_result", "paginated", "throttled", "out_of_retention", "permission_error"]
+          },
+          "observed_behavior": {
+            "type": "string",
+            "description": "What actually happened when this case was hit, and how it should be classified per the Task Execution Protocol's empty-result rules."
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["experimental", "stable"],
+      "description": "Only 'stable' recipes run without analyst confirmation. A recipe may only be marked 'stable' after a live-tenant validation run, never from a dry run."
+    },
+    "regression_fixture": {
+      "type": "string",
+      "description": "Path to a fixture in tests/fixtures/ that this recipe must pass, if one exists (e.g. tests/fixtures/threat_count_source.md)."
+    }
+  }
+}

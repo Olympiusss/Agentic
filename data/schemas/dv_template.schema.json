@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sentry.ai/schemas/dv_template.schema.json",
+  "title": "Deep Visibility / PowerQuery Hunt Template",
+  "description": "A single MITRE-tagged Deep Visibility hunt template (Phase 2, Milestone 5). Per the powerquery tool's own documentation (see data/knowledge/sentinelone/mcp_tools.md), the query string should generally originate from purple_ai(natural language) rather than being hand-composed -- a template here records the natural-language prompt and/or the resulting validated PowerQuery string.",
+  "type": "object",
+  "required": ["template_id", "hunt_pattern", "mitre", "query_source", "status"],
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "description": "Stable identifier, e.g. 'lolbin_execution_from_office'."
+    },
+    "hunt_pattern": {
+      "type": "string",
+      "enum": ["living_off_the_land", "credential_access", "persistence", "process_injection", "lateral_movement", "exfiltration"],
+      "description": "Which of the brief's six core hunt patterns this template covers."
+    },
+    "mitre": {
+      "type": "array",
+      "description": "MITRE ATT&CK tactic/technique tags for this template.",
+      "items": {
+        "type": "object",
+        "required": ["tactic", "technique_id"],
+        "properties": {
+          "tactic": {"type": "string"},
+          "technique_id": {"type": "string", "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$"},
+          "technique_name": {"type": "string"}
+        }
+      }
+    },
+    "query_source": {
+      "type": "object",
+      "description": "How this template's PowerQuery string was produced.",
+      "required": ["natural_language_prompt"],
+      "properties": {
+        "natural_language_prompt": {
+          "type": "string",
+          "description": "The prompt given to purple_ai() to generate this template's query, per the tool's own recommended workflow."
+        },
+        "resulting_query": {
+          "type": "string",
+          "description": "The exact PowerQuery string purple_ai() returned and that was subsequently validated -- run exactly as generated, per the tool's own instructions against modifying it."
+        }
+      }
+    },
+    "default_window": {
+      "type": "string",
+      "description": "Mandatory default time window for this template, e.g. 'PT24H' (ISO 8601 duration). Every DV query must be windowed."
+    },
+    "result_cap": {
+      "type": "integer",
+      "description": "Mandatory result cap for this template's query."
+    },
+    "false_positives_observed": {
+      "type": "array",
+      "description": "Known false-positive patterns recorded during validation on the live tenant.",
+      "items": {"type": "string"}
+    },
+    "status": {
+      "type": "string",
+      "enum": ["experimental", "stable"],
+      "description": "Only 'stable' templates run without analyst confirmation."
+    },
+    "storyline_pivot": {
+      "type": "boolean",
+      "default": false,
+      "description": "True if this template implements the storyline pivot procedure (read StorylineId from an alert, sweep it across endpoints in Deep Visibility, assemble the chain with MITRE tags)."
+    }
+  }
+}
