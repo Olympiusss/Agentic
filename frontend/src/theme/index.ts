@@ -1,126 +1,85 @@
 import { createTheme, alpha } from '@mui/material/styles'
 
-const tokens = {
-  navy: {
-    900: '#0F172A',
-    800: '#1E293B',
-    700: '#334155',
-    600: '#475569',
-    500: '#64748B',
-    400: '#94A3B8',
-    300: '#CBD5E1',
-    200: '#E2E8F0',
-    100: '#F1F5F9',
-  },
-  // Sentry Agentic brand — electric royal blue
-  brand: {
-    900: '#001A66',
-    800: '#002299',
-    700: '#0033CC',
-    600: '#0040FF',
-    500: '#1A6AFF',
-    400: '#4D9FFF',
-    300: '#80BFFF',
-    200: '#B3D9FF',
-    100: '#E6F2FF',
-  },
-  // accent for status indicators
-  cyan: {
-    500: '#06B6D4',
-    400: '#22D3EE',
-    300: '#67E8F9',
-  },
-  rose: {
-    500: '#F43F5E',
-    400: '#FB7185',
-  },
-  red: {
-    600: '#DC2626',
-    500: '#EF4444',
-    400: '#F87171',
-  },
-  orange: {
-    600: '#EA580C',
-    500: '#F97316',
-    400: '#FB923C',
-  },
-  amber: {
-    500: '#F59E0B',
-    400: '#FBBF24',
-  },
-  yellow: {
-    600: '#CA8A04',
-    500: '#EAB308',
-    400: '#FACC15',
-  },
-  emerald: {
-    500: '#10B981',
-    400: '#34D399',
-  },
+/* ============================================================
+   Sentry Agentic Brand Tokens
+   Primary: #1A6AFF (Sentry Blue)
+   Background light: #F0F4FF / white
+   Background dark:  #060D1F (near-black navy)
+   ============================================================ */
+
+const brand = {
+  blue:   '#1A6AFF',
+  blue2:  '#3D83FF',
+  blue3:  '#5BA4FF',
+  navy:   '#060D1F',
+  navy2:  '#0D1A36',
+  navy3:  '#162040',
+  navy4:  '#1E2D50',
+  white:  '#FFFFFF',
+  off:    '#F0F4FF',   // off-white with blue tint
+  off2:   '#E4ECFF',
+  slate:  '#7B93BB',   // muted text on dark
+  slate2: '#A8BBDD',
+  divDark: 'rgba(255,255,255,0.08)',
+  divLight:'rgba(26,106,255,0.12)',
 }
 
 export const severityColors = {
-  critical: tokens.red[600],
-  high: tokens.red[500],
-  medium: tokens.orange[500],
-  low: tokens.yellow[400],
+  critical: '#DC2626',
+  high:     '#EF4444',
+  medium:   '#F97316',
+  low:      '#FACC15',
 }
 
 export const statusColors = {
-  open: tokens.cyan[500],
-  'in-progress': tokens.amber[500],
-  'in_progress': tokens.amber[500],
-  resolved: tokens.emerald[500],
-  closed: tokens.navy[500],
-  pending: tokens.amber[500],
-  approved: tokens.emerald[500],
-  rejected: tokens.rose[500],
-  executed: tokens.cyan[500],
+  open:        '#1A6AFF',
+  'in-progress': '#F59E0B',
+  'in_progress': '#F59E0B',
+  resolved:    '#10B981',
+  closed:      '#64748B',
+  pending:     '#F59E0B',
+  approved:    '#10B981',
+  rejected:    '#F43F5E',
+  executed:    '#1A6AFF',
 }
 
 export const createM3Theme = (mode: 'light' | 'dark') => {
   const isDark = mode === 'dark'
-  
+
   return createTheme({
     palette: {
       mode,
       primary: {
-        main: tokens.brand[500],
-        light: tokens.brand[400],
-        dark: tokens.brand[700],
-        contrastText: '#fff',
+        main:         brand.blue,
+        light:        brand.blue2,
+        dark:         '#1050CC',
+        contrastText: '#ffffff',
       },
       secondary: {
-        main: tokens.navy[500],
-        light: tokens.navy[400],
-        dark: tokens.navy[700],
+        main:  isDark ? brand.slate2 : brand.navy4,
+        light: brand.slate,
+        dark:  brand.navy3,
       },
-      error: {
-        main: tokens.rose[500],
-        light: tokens.rose[400],
-      },
-      warning: {
-        main: tokens.amber[500],
-        light: tokens.amber[400],
-      },
-      success: {
-        main: tokens.emerald[500],
-        light: tokens.emerald[400],
-      },
+      error:   { main: '#EF4444', light: '#F87171' },
+      warning: { main: '#F59E0B', light: '#FBBF24' },
+      success: { main: '#10B981', light: '#34D399' },
+      info:    { main: brand.blue, light: brand.blue2 },
       background: {
-        default: isDark ? tokens.navy[900] : tokens.navy[100],
-        paper: isDark ? tokens.navy[800] : '#ffffff',
+        default: isDark ? brand.navy  : brand.off,
+        paper:   isDark ? brand.navy2 : brand.white,
       },
       text: {
-        primary: isDark ? tokens.navy[100] : tokens.navy[900],
-        secondary: isDark ? tokens.navy[400] : tokens.navy[600],
+        primary:   isDark ? '#E8EEFF' : brand.navy,
+        secondary: isDark ? brand.slate2 : brand.navy4,
+        disabled:  isDark ? brand.slate : '#94A3B8',
       },
-      divider: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+      divider: isDark ? brand.divDark : brand.divLight,
     },
+
     typography: {
       fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      h1: { fontWeight: 600, letterSpacing: '-0.02em' },
-      h2: { fontWeight: 600, letterSpacing: '-0.02em' },
+      h1: { fontWeight: 700, letterSpacing: '-0.02em' },
+      h2: { fontWeight: 700, letterSpacing: '-0.02em' },
       h3: { fontWeight: 600, letterSpacing: '-0.01em' },
       h4: { fontWeight: 600, letterSpacing: '-0.01em' },
       h5: { fontWeight: 600 },
@@ -129,131 +88,156 @@ export const createM3Theme = (mode: 'light' | 'dark') => {
       subtitle2: { fontWeight: 500 },
       body1: { fontSize: '0.875rem' },
       body2: { fontSize: '0.8125rem' },
-      caption: { fontSize: '0.75rem', color: isDark ? tokens.navy[400] : tokens.navy[500] },
-      button: { textTransform: 'none', fontWeight: 500 },
+      caption: {
+        fontSize: '0.75rem',
+        color: isDark ? brand.slate2 : brand.navy4,
+      },
+      button: { textTransform: 'none', fontWeight: 600 },
     },
-    shape: {
-      borderRadius: 8,
-    },
+
+    shape: { borderRadius: 10 },
+
     components: {
       MuiCssBaseline: {
         styleOverrides: {
           body: {
-            scrollbarColor: isDark ? `${tokens.navy[600]} ${tokens.navy[800]}` : undefined,
-            '&::-webkit-scrollbar': { width: 8, height: 8 },
+            scrollbarColor: isDark
+              ? `${brand.navy3} ${brand.navy}`
+              : `${brand.off2} ${brand.off}`,
+            '&::-webkit-scrollbar': { width: 6, height: 6 },
             '&::-webkit-scrollbar-thumb': {
-              backgroundColor: isDark ? tokens.navy[600] : tokens.navy[300],
-              borderRadius: 4,
+              backgroundColor: isDark ? brand.navy4 : brand.off2,
+              borderRadius: 3,
+              '&:hover': { backgroundColor: brand.blue },
             },
             '&::-webkit-scrollbar-track': {
-              backgroundColor: isDark ? tokens.navy[800] : tokens.navy[100],
+              backgroundColor: isDark ? brand.navy : brand.off,
             },
           },
         },
       },
+
       MuiButton: {
         styleOverrides: {
-          root: {
-            borderRadius: 8,
-            padding: '6px 16px',
-            fontWeight: 500,
-          },
+          root: { borderRadius: 8, padding: '6px 16px', fontWeight: 600 },
           contained: {
             boxShadow: 'none',
-            '&:hover': { boxShadow: 'none' },
+            '&:hover': {
+              boxShadow: `0 4px 16px ${alpha(brand.blue, 0.35)}`,
+              transform: 'translateY(-1px)',
+            },
+            transition: 'box-shadow 0.2s, transform 0.15s',
           },
           containedPrimary: {
-            backgroundColor: tokens.cyan[500],
-            '&:hover': { backgroundColor: tokens.cyan[400] },
+            background: `linear-gradient(135deg, ${brand.blue} 0%, ${brand.blue2} 100%)`,
+            '&:hover': {
+              background: `linear-gradient(135deg, #1050CC 0%, ${brand.blue} 100%)`,
+            },
+          },
+          outlined: {
+            borderColor: isDark ? alpha(brand.blue, 0.4) : alpha(brand.blue, 0.5),
+            color: brand.blue,
+            '&:hover': {
+              borderColor: brand.blue,
+              backgroundColor: alpha(brand.blue, 0.06),
+            },
           },
         },
-        defaultProps: {
-          disableElevation: true,
-        },
+        defaultProps: { disableElevation: true },
       },
+
       MuiPaper: {
         styleOverrides: {
           root: {
             backgroundImage: 'none',
             borderRadius: 12,
+            border: `1px solid ${isDark ? brand.divDark : brand.divLight}`,
           },
           outlined: {
-            borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+            borderColor: isDark ? brand.divDark : brand.divLight,
+          },
+          elevation1: {
+            boxShadow: isDark
+              ? '0 4px 24px rgba(0,0,0,0.4)'
+              : `0 4px 24px ${alpha(brand.blue, 0.08)}`,
           },
         },
-        defaultProps: {
-          elevation: 0,
-        },
+        defaultProps: { elevation: 0 },
       },
+
       MuiCard: {
         styleOverrides: {
           root: {
-            borderRadius: 12,
-            border: `1px solid ${isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08)}`,
+            borderRadius: 14,
+            border: `1px solid ${isDark ? brand.divDark : brand.divLight}`,
             backgroundImage: 'none',
+            background: isDark ? brand.navy2 : brand.white,
+            boxShadow: isDark
+              ? '0 2px 16px rgba(0,0,0,0.3)'
+              : `0 2px 16px ${alpha(brand.blue, 0.06)}`,
+            transition: 'box-shadow 0.2s',
+            '&:hover': {
+              boxShadow: isDark
+                ? '0 4px 24px rgba(0,0,0,0.5)'
+                : `0 4px 24px ${alpha(brand.blue, 0.12)}`,
+            },
           },
         },
-        defaultProps: {
-          elevation: 0,
-        },
+        defaultProps: { elevation: 0 },
       },
+
       MuiCardContent: {
         styleOverrides: {
-          root: {
-            padding: 16,
-            '&:last-child': { paddingBottom: 16 },
-          },
+          root: { padding: 16, '&:last-child': { paddingBottom: 16 } },
         },
       },
+
       MuiChip: {
         styleOverrides: {
-          root: {
-            borderRadius: 6,
-            fontWeight: 500,
-            fontSize: '0.75rem',
+          root: { borderRadius: 6, fontWeight: 600, fontSize: '0.75rem' },
+          colorPrimary: {
+            backgroundColor: alpha(brand.blue, isDark ? 0.2 : 0.1),
+            color: brand.blue,
           },
-          sizeSmall: {
-            height: 22,
-          },
+          sizeSmall: { height: 22 },
         },
       },
+
       MuiTableCell: {
         styleOverrides: {
           root: {
-            borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+            borderColor: isDark ? brand.divDark : brand.divLight,
             padding: '8px 12px',
             fontSize: '0.8125rem',
           },
           head: {
-            fontWeight: 600,
-            backgroundColor: isDark ? tokens.navy[900] : tokens.navy[100],
-            color: isDark ? tokens.navy[300] : tokens.navy[700],
-            fontSize: '0.75rem',
+            fontWeight: 700,
+            backgroundColor: isDark ? brand.navy : brand.off,
+            color: isDark ? brand.slate2 : brand.navy4,
+            fontSize: '0.72rem',
             textTransform: 'uppercase',
-            letterSpacing: '0.05em',
+            letterSpacing: '0.06em',
           },
         },
       },
+
       MuiTableRow: {
         styleOverrides: {
           root: {
             '&:hover': {
-              backgroundColor: isDark ? alpha('#fff', 0.02) : alpha('#000', 0.02),
+              backgroundColor: isDark ? alpha(brand.blue, 0.04) : alpha(brand.blue, 0.03),
             },
           },
         },
       },
+
       MuiTabs: {
         styleOverrides: {
-          root: {
-            minHeight: 40,
-          },
-          indicator: {
-            height: 2,
-            borderRadius: 1,
-          },
+          root: { minHeight: 40 },
+          indicator: { height: 2, borderRadius: 1, backgroundColor: brand.blue },
         },
       },
+
       MuiTab: {
         styleOverrides: {
           root: {
@@ -262,147 +246,135 @@ export const createM3Theme = (mode: 'light' | 'dark') => {
             fontWeight: 500,
             textTransform: 'none',
             fontSize: '0.875rem',
+            color: isDark ? brand.slate2 : brand.navy4,
+            '&.Mui-selected': { color: brand.blue, fontWeight: 700 },
           },
         },
       },
+
       MuiTextField: {
         styleOverrides: {
           root: {
             '& .MuiOutlinedInput-root': {
               borderRadius: 8,
               '& fieldset': {
-                borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                borderColor: isDark ? alpha(brand.white, 0.12) : alpha(brand.blue, 0.2),
               },
               '&:hover fieldset': {
-                borderColor: isDark ? alpha('#fff', 0.2) : alpha('#000', 0.2),
+                borderColor: isDark ? alpha(brand.white, 0.25) : brand.blue,
+              },
+              '&.Mui-focused fieldset': {
+                borderColor: brand.blue,
+                boxShadow: `0 0 0 3px ${alpha(brand.blue, 0.15)}`,
               },
             },
           },
         },
-        defaultProps: {
-          size: 'small',
-        },
+        defaultProps: { size: 'small' },
       },
+
       MuiSelect: {
-        styleOverrides: {
-          root: {
-            borderRadius: 8,
-          },
-        },
-        defaultProps: {
-          size: 'small',
-        },
+        styleOverrides: { root: { borderRadius: 8 } },
+        defaultProps: { size: 'small' },
       },
+
       MuiDialog: {
         styleOverrides: {
-          paper: {
-            borderRadius: 16,
-            backgroundImage: 'none',
-          },
+          paper: { borderRadius: 18, backgroundImage: 'none' },
         },
       },
+
       MuiDialogTitle: {
         styleOverrides: {
-          root: {
-            fontSize: '1.125rem',
-            fontWeight: 600,
-            padding: '16px 20px',
-          },
+          root: { fontSize: '1.125rem', fontWeight: 700, padding: '16px 20px' },
         },
       },
+
       MuiDialogContent: {
-        styleOverrides: {
-          root: {
-            padding: '8px 20px 16px',
-          },
-        },
+        styleOverrides: { root: { padding: '8px 20px 16px' } },
       },
+
       MuiDialogActions: {
-        styleOverrides: {
-          root: {
-            padding: '12px 20px 16px',
-          },
-        },
+        styleOverrides: { root: { padding: '12px 20px 16px' } },
       },
+
       MuiTooltip: {
         styleOverrides: {
           tooltip: {
-            backgroundColor: tokens.navy[700],
+            backgroundColor: isDark ? brand.navy3 : brand.navy,
+            color: brand.white,
             fontSize: '0.75rem',
             borderRadius: 6,
             padding: '6px 10px',
           },
+          arrow: {
+            color: isDark ? brand.navy3 : brand.navy,
+          },
         },
       },
+
       MuiAlert: {
         styleOverrides: {
-          root: {
-            borderRadius: 8,
-          },
-          standardError: {
-            backgroundColor: isDark ? alpha(tokens.rose[500], 0.15) : alpha(tokens.rose[500], 0.1),
-            color: isDark ? tokens.rose[400] : tokens.rose[500],
-          },
-          standardWarning: {
-            backgroundColor: isDark ? alpha(tokens.amber[500], 0.15) : alpha(tokens.amber[500], 0.1),
-            color: isDark ? tokens.amber[400] : tokens.amber[500],
-          },
-          standardSuccess: {
-            backgroundColor: isDark ? alpha(tokens.emerald[500], 0.15) : alpha(tokens.emerald[500], 0.1),
-            color: isDark ? tokens.emerald[400] : tokens.emerald[500],
-          },
-          standardInfo: {
-            backgroundColor: isDark ? alpha(tokens.cyan[500], 0.15) : alpha(tokens.cyan[500], 0.1),
-            color: isDark ? tokens.cyan[400] : tokens.cyan[500],
-          },
+          root: { borderRadius: 10 },
+          standardError:   { backgroundColor: alpha('#EF4444', isDark ? 0.15 : 0.08), color: '#EF4444' },
+          standardWarning: { backgroundColor: alpha('#F59E0B', isDark ? 0.15 : 0.08), color: '#D97706' },
+          standardSuccess: { backgroundColor: alpha('#10B981', isDark ? 0.15 : 0.08), color: '#059669' },
+          standardInfo:    { backgroundColor: alpha(brand.blue, isDark ? 0.15 : 0.08), color: brand.blue },
         },
       },
+
       MuiDrawer: {
         styleOverrides: {
           paper: {
             backgroundImage: 'none',
-            backgroundColor: isDark ? tokens.navy[900] : '#fff',
-            borderRight: `1px solid ${isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08)}`,
+            backgroundColor: isDark ? brand.navy : brand.white,
+            borderRight: `1px solid ${isDark ? brand.divDark : brand.divLight}`,
           },
         },
       },
+
       MuiListItemButton: {
         styleOverrides: {
           root: {
             borderRadius: 8,
-            margin: '2px 8px',
-            padding: '8px 12px',
             '&.Mui-selected': {
-              backgroundColor: isDark ? alpha(tokens.cyan[500], 0.15) : alpha(tokens.cyan[500], 0.1),
-              '&:hover': {
-                backgroundColor: isDark ? alpha(tokens.cyan[500], 0.2) : alpha(tokens.cyan[500], 0.15),
-              },
+              backgroundColor: alpha(brand.blue, isDark ? 0.18 : 0.1),
+              '&:hover': { backgroundColor: alpha(brand.blue, isDark ? 0.24 : 0.15) },
             },
+            '&:hover': { backgroundColor: alpha(brand.blue, isDark ? 0.1 : 0.06) },
           },
         },
       },
+
       MuiListItemIcon: {
-        styleOverrides: {
-          root: {
-            minWidth: 36,
-            color: 'inherit',
-          },
-        },
+        styleOverrides: { root: { minWidth: 36, color: 'inherit' } },
       },
+
       MuiIconButton: {
+        styleOverrides: { root: { borderRadius: 8 } },
+      },
+
+      MuiSnackbar: {
+        defaultProps: { anchorOrigin: { vertical: 'top', horizontal: 'right' } },
+      },
+
+      MuiLinearProgress: {
         styleOverrides: {
-          root: {
-            borderRadius: 8,
-          },
+          root: { borderRadius: 4, backgroundColor: alpha(brand.blue, 0.15) },
+          bar:  { backgroundColor: brand.blue, borderRadius: 4 },
         },
       },
-      MuiSnackbar: {
-        defaultProps: {
-          anchorOrigin: { vertical: 'top', horizontal: 'right' },
+
+      MuiSwitch: {
+        styleOverrides: {
+          switchBase: {
+            '&.Mui-checked': { color: brand.blue },
+            '&.Mui-checked + .MuiSwitch-track': { backgroundColor: brand.blue },
+          },
         },
       },
     },
   })
 }
 
-export { tokens }
+export { brand }

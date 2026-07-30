@@ -11,9 +11,10 @@ import api from '../services/api';
 // Dev mode flag - reads from Vite environment variable
 const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
 
+
 if (DEV_MODE) {
-  console.warn('⚠️  DEV_MODE is ENABLED - Authentication is BYPASSED!');
-  console.warn('⚠️  This should NEVER be enabled in production!');
+  console.warn('[WARN] DEV_MODE is ENABLED - Authentication is BYPASSED!');
+  console.warn('[WARN] This should NEVER be enabled in production!');
 }
 
 // Mock dev user with FULL ADMIN permissions
@@ -60,6 +61,7 @@ interface User {
   username: string;
   email: string;
   full_name: string;
+  organisation?: string;   // client / company name shown in greeting
   role_id: string;
   is_active: boolean;
   is_verified: boolean;
@@ -68,6 +70,20 @@ interface User {
   login_count: number;
   permissions?: Record<string, boolean>;
 }
+
+// Demo users (login works even without a running backend)
+const ALL_PERMISSIONS: Record<string, boolean> = {
+  'findings.read': true, 'findings.write': true, 'findings.delete': true,
+  'cases.read': true,    'cases.write': true,    'cases.delete': true,
+  'cases.assign': true,  'integrations.read': true, 'integrations.write': true,
+  'users.read': true,    'users.write': true,    'users.delete': true,
+  'settings.read': true, 'settings.write': true, 'config.write': true,
+  'ai_chat.use': true,   'ai_decisions.approve': true,
+};
+
+// NOTE: Demo fallback removed — all auth goes through the real backend.
+// Credentials: admin / SentryAdmin2024!
+
 
 interface AuthContextType {
   user: User | null;
@@ -92,7 +108,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [isLoading, setIsLoading] = useState(true);
 
   // Load user on mount. Auth cookies are HttpOnly so we can't read them
-  // from JS — we just call /auth/me and let the cookie (if present and
+  // from JS - we just call /auth/me and let the cookie (if present and
   // valid) identify the user. A 401 means not logged in; show the login UI.
   useEffect(() => {
     const loadUser = async () => {
@@ -107,7 +123,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const response = await api.get('/auth/me');
         setUser(response.data);
       } catch {
-        // Not logged in — AuthContext stays with user=null and the app
+        // Not logged in - AuthContext stays with user=null and the app
         // renders the login page. /auth/me also seeds the csrf_token
         // cookie as a side effect so the subsequent login POST works.
       }
@@ -137,27 +153,27 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return;
     }
 
-    // PRODUCTION MODE: Normal login flow. The backend sets HttpOnly
-    // cookies for access_token and refresh_token; we just read the user
-    // from the response body.
+    // Always authenticate against the real backend — sets HttpOnly JWT cookie
+    // that all subsequent API calls (chat, findings, etc.) rely on.
     try {
-      const response = await api.post('/auth/login', {
+      await api.post('/auth/login', {
         username_or_email: usernameOrEmail,
         password,
         mfa_code: mfaCode,
       });
-
-      setUser(response.data.user);
+      // Login response does not include role permissions (only user.to_dict()).
+      // Call /auth/me to get the full user object with permissions attached.
+      const meResponse = await api.get('/auth/me');
+      setUser(meResponse.data);
     } catch (error: any) {
       const isMfaRequired =
         error.response?.headers?.['x-mfa-required'] === 'true' ||
         error.response?.data?.detail === 'MFA code required';
-      if (isMfaRequired) {
-        throw new Error('MFA_REQUIRED');
-      }
+      if (isMfaRequired) throw new Error('MFA_REQUIRED');
       throw error;
     }
   };
+
 
   const logout = async () => {
     // DEV MODE: Just clear mock user
@@ -180,7 +196,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const refreshToken = async () => {
     try {
-      // Refresh cookie is HttpOnly — the browser sends it automatically.
+      // Refresh cookie is HttpOnly - the browser sends it automatically.
       const response = await api.post('/auth/refresh');
       setUser(response.data.user);
     } catch (error) {

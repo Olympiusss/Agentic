@@ -47,6 +47,7 @@ import {
   Psychology as ReasoningIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
+  FileDownload as ExportIcon,
 } from '@mui/icons-material'
 import {
   claudeApi,
@@ -82,9 +83,12 @@ interface ChatTab {
 interface ClaudeDrawerProps {
   open: boolean
   onClose: () => void
+  onCollapse?: () => void   // minimise to floating tab
   initialMessages?: Message[]
   initialAgentId?: string
   initialTitle?: string
+  fullScreen?: boolean
+  panelMode?: boolean       // right-side panel (not fullscreen overlay)
 }
 
 interface Agent {
@@ -103,7 +107,7 @@ interface AttachedFile {
   media_type?: string
 }
 
-export default function ClaudeDrawer({ open, onClose, initialMessages, initialAgentId, initialTitle }: ClaudeDrawerProps) {
+export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessages, initialAgentId, initialTitle, fullScreen = false, panelMode = false }: ClaudeDrawerProps) {
   const theme = useTheme()
   
   const stripThinkingBlocks = (messages: Message[]): Message[] => {
@@ -142,7 +146,7 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
       logger.error('Failed to load settings', e)
     }
     return {
-      model: 'claude-sonnet-4-20250514', 
+      model: 'claude-haiku-4-5-20251001', 
       maxTokens: 4096, 
       systemPrompt: '', 
       selectedAgent: '',
@@ -324,7 +328,7 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
             },
             body: JSON.stringify({
               messages: initialMessages,
-              model: model || 'claude-sonnet-4-20250514',
+              model: model || 'claude-haiku-4-5-20251001',
               max_tokens: maxTokens,
               enable_thinking: enableThinking,
               thinking_budget: enableThinking ? thinkingBudget : undefined,
@@ -839,11 +843,55 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
   }
 
   return (
-    <Drawer anchor="right" open={open} onClose={onClose} sx={{ '& .MuiDrawer-paper': { width: { xs: '100%', sm: 420, md: 480 }, bgcolor: 'background.default' } }}>
+    <Drawer
+      anchor="right"
+      open={open}
+      onClose={onClose}
+      sx={{
+        '& .MuiDrawer-paper': {
+          width: fullScreen ? '100vw' : { xs: '100%', sm: 420, md: 480 },
+          maxWidth: fullScreen ? '100vw' : undefined,
+          bgcolor: 'background.default',
+        },
+        '& .MuiBackdrop-root': {
+          backgroundColor: fullScreen ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.5)',
+        },
+      }}
+    >
       <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider', display: 'flex', justifyContent: 'space-between', alignItems: 'center', bgcolor: 'background.paper' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>Sentry Agentic</Typography>
+        {/* Header */}
+        <Box sx={{
+          px: 2, py: 1.5,
+          borderBottom: 1, borderColor: 'divider',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          bgcolor: 'background.paper',
+          background: (t) => t.palette.mode === 'dark'
+            ? 'linear-gradient(135deg, #060D1F 0%, #0D1A36 100%)'
+            : 'linear-gradient(135deg, #ffffff 0%, #F0F4FF 100%)',
+        }}>
+          {/* Logo + Title */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2 }}>
+            <svg width="22" height="24" viewBox="0 0 120 130" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="cdlg" x1="20" y1="0" x2="100" y2="130" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stopColor="#5BA4FF" />
+                  <stop offset="100%" stopColor="#1A3FCC" />
+                </linearGradient>
+              </defs>
+              <path d="M60 4C60 4 10 22 10 58L10 78C10 108 60 126 60 126C60 126 110 108 110 78L110 58C110 22 60 4 60 4Z" fill="url(#cdlg)" />
+              <path d="M60 4C60 4 10 22 10 58L10 68C35 50 85 50 110 68L110 58C110 22 60 4 60 4Z" fill="rgba(255,255,255,0.18)" />
+              <rect x="28" y="38" width="16" height="52" rx="8" fill="white" />
+              <rect x="52" y="30" width="16" height="66" rx="8" fill="white" />
+              <rect x="76" y="38" width="16" height="52" rx="8" fill="white" />
+            </svg>
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'text.primary', lineHeight: 1.1, letterSpacing: '-0.01em' }}>
+                Sentry Chat
+              </Typography>
+              <Typography sx={{ fontSize: '9px', fontWeight: 700, color: 'primary.main', letterSpacing: '2px', textTransform: 'uppercase' }}>
+                AI Assistant
+              </Typography>
+            </Box>
             {sessionSummary && sessionSummary.total_interactions > 0 && (
               <Tooltip title={`${sessionSummary.total_interactions} LLM calls · in ${sessionSummary.total_input_tokens.toLocaleString()} tok · out ${sessionSummary.total_output_tokens.toLocaleString()} tok`}>
                 <Chip
@@ -854,7 +902,30 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
               </Tooltip>
             )}
           </Box>
-          <Box>
+
+          {/* Action buttons */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            {/* Export chat */}
+            <Tooltip title="Export chat">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  const tab = tabs[currentTab]
+                  if (!tab) return
+                  const text = tab.messages.map(m =>
+                    `${m.role === 'user' ? 'You' : 'Sentry AI'}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`
+                  ).join('\n\n')
+                  const blob = new Blob([text], { type: 'text/plain' })
+                  const a = document.createElement('a')
+                  a.href = URL.createObjectURL(blob)
+                  a.download = `sentry-chat-${Date.now()}.txt`
+                  a.click()
+                }}
+                sx={{ color: 'primary.main', '&:hover': { bgcolor: (t) => alpha(t.palette.primary.main, 0.1) } }}
+              >
+                <ExportIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="View reasoning trace">
               <span>
                 <IconButton
@@ -862,7 +933,7 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
                   onClick={openReasoningTrace}
                   disabled={!sessionSummary || sessionSummary.total_interactions === 0}
                 >
-                  <ReasoningIcon sx={{ fontSize: 20 }} />
+                  <ReasoningIcon sx={{ fontSize: 18 }} />
                 </IconButton>
               </span>
             </Tooltip>
@@ -887,9 +958,26 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
                 }
               }}
             >
-              <SettingsIcon sx={{ fontSize: 20 }} />
+              <SettingsIcon sx={{ fontSize: 18 }} />
             </IconButton>
-            <IconButton size="small" onClick={onClose}><CloseIcon sx={{ fontSize: 20 }} /></IconButton>
+            <IconButton size="small" onClick={panelMode && onCollapse ? onCollapse : onClose}
+              title={panelMode ? 'Minimise chat' : 'Close'}
+              sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' } }}
+            >
+              {/* Chevron-right collapses in panel mode; X closes in full mode */}
+              {panelMode
+                ? <span style={{ fontSize: 18, lineHeight: 1, display: 'flex', alignItems: 'center' }}>&#8250;</span>
+                : <CloseIcon sx={{ fontSize: 18 }} />
+              }
+            </IconButton>
+            {panelMode && (
+              <IconButton size="small" onClick={onClose} title="Close chat"
+                sx={{ color: 'text.secondary', '&:hover': { color: 'error.main' } }}
+              >
+                <CloseIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            )}
+
           </Box>
         </Box>
 
@@ -950,7 +1038,7 @@ export default function ClaudeDrawer({ open, onClose, initialMessages, initialAg
               <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
                 <Select value={model} onChange={(e) => setModel(e.target.value)} displayEmpty>
                   {models.map(m => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}
-                  {models.length === 0 && <MenuItem value="claude-sonnet-4-20250514">Claude 4 Sonnet</MenuItem>}
+                  {models.length === 0 && <MenuItem value="claude-haiku-4-5-20251001">Claude Haiku 4.5</MenuItem>}
                 </Select>
               </FormControl>
               <TextField 

@@ -199,19 +199,20 @@ AGENT_CONFIGS = {
         "icon": "I",
         "color": "#4ECDC4",
         "description": "Deep-dive security investigations",
-        "specialization": "Deep Security Investigations",
-        "tools": ["list_findings", "get_finding", "create_approval_action"],
+        "specialization": "Deep Security Investigations (Deep Visibility 2.0)",
+        "tools": ["list_findings", "get_finding", "powerquery", "purple_ai", "create_approval_action"],
         "max_tokens": 16384,
         "thinking": True,
         "thinking_budget": 10000,
-        "extra_principles": "- Be thorough - follow systematic methodology\n- Document chain of evidence\n- Proactively suggest containment actions\n- Memory: mempalace_search all IOCs before starting; mempalace_add_drawer to wing=investigations/active-cases during; mempalace_kg_add for entity relationships found",
+        "extra_principles": "- Be thorough - follow systematic methodology\n- Use Deep Visibility 2.0 PowerQuery (powerquery) for telemetry & process tree reconstruction\n- Document chain of evidence\n- Proactively suggest containment actions\n- Memory: mempalace_search all IOCs before starting; mempalace_add_drawer to wing=investigations/active-cases during; mempalace_kg_add for entity relationships found",
         "methodology": """<methodology>
-1. Retrieve data via MCP tools
-2. Collect context: related findings, logs, threat intel
-3. Correlate evidence across sources
-4. Analyze: root causes, attack vectors, business impact
-5. Recommend containment and remediation
-6. Document thoroughly for audit trail
+1. Retrieve data via MCP tools (list_findings, get_finding)
+2. Execute Deep Visibility 2.0 telemetry queries via powerquery / purple_ai to reconstruct process trees & network events
+3. Collect context: related findings, logs, threat intel
+4. Correlate evidence across sources
+5. Analyze: root causes, attack vectors, business impact
+6. Recommend containment and remediation
+7. Document thoroughly for audit trail
 </methodology>""",
     },
     "threat_hunter": {
@@ -220,16 +221,16 @@ AGENT_CONFIGS = {
         "icon": "H",
         "color": "#95E1D3",
         "description": "Proactive threat hunting and anomaly detection",
-        "specialization": "Proactive Threat Hunting",
-        "tools": ["list_findings", "create_approval_action"],
+        "specialization": "Proactive Threat Hunting (Deep Visibility 2.0)",
+        "tools": ["list_findings", "powerquery", "purple_ai", "create_approval_action"],
         "max_tokens": 16384,
         "thinking": True,
         "thinking_budget": 10000,
-        "extra_principles": "- Think like an attacker\n- Search across all available data sources\n- Share insights to improve team hunting\n- Memory: mempalace_search in threat-intel wing before forming hypotheses; mempalace_add_drawer confirmed TTPs to wing=threat-intel/actor-profiles",
+        "extra_principles": "- Think like an attacker\n- Use Deep Visibility 2.0 PowerQuery (powerquery) to query process executions, DNS queries, and network events across endpoints\n- Search across all available data sources\n- Share insights to improve team hunting\n- Memory: mempalace_search in threat-intel wing before forming hypotheses; mempalace_add_drawer confirmed TTPs to wing=threat-intel/actor-profiles",
         "methodology": """<methodology>
 1. Formulate hypothesis based on TTPs
 2. Define hunt parameters: scope, timeframe, sources
-3. Execute hunt using MCP tools
+3. Execute Deep Visibility 2.0 hunt using powerquery and purple_ai
 4. Identify anomalies and outliers
 5. Validate findings, eliminate false positives
 6. Document insights and recommend detections

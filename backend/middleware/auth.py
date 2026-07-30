@@ -34,40 +34,38 @@ _dev_user = None
 def _get_dev_user(session: Session) -> User:
     """
     Get or create a mock dev user for development mode.
-    
-    Args:
-        session: Database session
-    
-    Returns:
-        Mock dev user with admin permissions
+    Falls back to a pure in-memory User object when PostgreSQL is unavailable.
     """
     global _dev_user
-    
-    if _dev_user is None:
-        # Try to get existing admin user
+
+    if _dev_user is not None:
+        return _dev_user
+
+    # Try DB first
+    try:
         _dev_user = session.query(User).filter(User.username == "admin").first()
-        
-        # If no admin, create a mock user object (won't be persisted)
-        if _dev_user is None:
-            from database.models import Role
-            import uuid
-            
-            # Try to get admin role
-            admin_role = session.query(Role).filter(Role.name == "admin").first()
-            
-            # Create mock user
-            _dev_user = User(
-                user_id=str(uuid.uuid4()),
-                username="dev-user",
-                email="dev@localhost",
-                password_hash="",  # Not used in dev mode
-                role_id=admin_role.role_id if admin_role else str(uuid.uuid4()),
-                is_active=True,
-                mfa_enabled=False
-            )
-            logger.info("Created mock dev user (not persisted to DB)")
-    
+        if _dev_user is not None:
+            logger.info("DEV_MODE: loaded admin user from DB")
+            return _dev_user
+    except Exception as db_err:
+        logger.warning("DEV_MODE: DB unavailable (%s) -- using in-memory admin", db_err)
+
+    # DB unavailable: build a fully-capable in-memory user
+    _dev_user = User.__new__(User)
+    _dev_user.user_id       = "dev-admin-001"
+    _dev_user.username      = "admin"
+    _dev_user.email         = "admin@sentryagentic.local"
+    _dev_user.full_name     = "John Admin"
+    _dev_user.password_hash = ""
+    _dev_user.role_id       = "role-admin"
+    _dev_user.is_active     = True
+    _dev_user.is_verified   = True
+    _dev_user.mfa_enabled   = False
+    _dev_user.last_login    = None
+    _dev_user.login_count   = 0
+    logger.info("DEV_MODE: in-memory admin user created (no DB required)")
     return _dev_user
+
 
 
 async def get_current_user(

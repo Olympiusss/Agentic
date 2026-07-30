@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import {
   Box,
@@ -36,6 +36,7 @@ import EventTimeline from '../components/timeline/EventTimeline'
 import EntityVisualization from '../components/graph/EntityVisualization'
 import { StatCard, SearchInput } from '../components/ui'
 import { severityColors } from '../theme'
+import { useAuth } from '../contexts/AuthContext'
 
 interface LayoutContext {
   handleInvestigate: (findingId: string, agentId: string, prompt: string, title: string) => void
@@ -65,7 +66,30 @@ export default function Dashboard() {
   const [timesketchEnabled, setTimesketchEnabled] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
   const theme = useTheme()
+  const { user } = useAuth()
   const [timelineEvents, setTimelineEvents] = useState<any[]>([])
+
+  // --- Dynamic greeting - auto-detects user + client from auth context ---
+  const greeting = useMemo(() => {
+    const h = new Date().getHours()
+    const firstName = user?.full_name
+      ? user.full_name.split(' ')[0]
+      : (user?.username || 'Operator')
+    const client = (user as any)?.organisation || 'Cybervergent'
+    const timeGreet = h >= 5 && h < 12  ? 'Good morning'
+                    : h >= 12 && h < 17 ? 'Good afternoon'
+                    : h >= 17 && h < 21 ? 'Good evening'
+                    : 'Good night'
+    return `${timeGreet} ${firstName}, ${client}`
+  }, [user])
+
+  // --- Sub-label: current date ---
+  const dateLabel = useMemo(() => {
+    return new Date().toLocaleDateString('en-GB', {
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    })
+  }, [])
+
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] })
   const [loadingTimeline, setLoadingTimeline] = useState(false)
   const [loadingGraph, setLoadingGraph] = useState(false)
@@ -208,11 +232,30 @@ export default function Dashboard() {
     <Box>
       <Box display="flex" justifyContent="space-between" alignItems="flex-start" mb={3}>
         <Box>
-          <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.5 }}>
-            Dashboard
+          {/* Dynamic time-based greeting */}
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 800,
+              mb: 0.3,
+              background: 'linear-gradient(135deg, #ffffff 0%, #1A6AFF 60%, #5BA4FF 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+              textShadow: 'none',
+              filter: 'drop-shadow(0 4px 16px rgba(26,106,255,0.45)) drop-shadow(0 1px 3px rgba(0,0,0,0.4))',
+              letterSpacing: '-0.03em',
+              lineHeight: 1.1,
+              userSelect: 'none',
+            }}
+          >
+            {greeting}
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Security operations overview
+          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.4)', letterSpacing: '0.04em', fontSize: '0.72rem', fontWeight: 400, mt: 0.3 }}>
+            {dateLabel}
+          </Typography>
+          <Typography variant="body2" sx={{ color: 'rgba(255,255,255,0.35)', letterSpacing: '0.08em', fontSize: '0.68rem', textTransform: 'uppercase', fontWeight: 500, mt: 0.2 }}>
+            Security Operations Centre
           </Typography>
         </Box>
         <Box display="flex" alignItems="center" gap={1}>
@@ -246,9 +289,6 @@ export default function Dashboard() {
               Timesketch
             </Button>
           )}
-          <Button size="small" variant="contained" startIcon={<ExportIcon />} onClick={handleExport}>
-            Export
-          </Button>
         </Box>
       </Box>
 

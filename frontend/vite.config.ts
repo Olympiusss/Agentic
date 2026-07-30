@@ -18,11 +18,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
-      port: 6988,
-      host: '127.0.0.1', // Use IPv4 explicitly
+      port: 6989,
+      host: '127.0.0.1',
       proxy: {
         '/api': {
-          target: 'http://127.0.0.1:6987', // Use IPv4 explicitly instead of localhost
+          target: 'http://127.0.0.1:6987', // SentryAgentic backend
           changeOrigin: true,
         },
       },
