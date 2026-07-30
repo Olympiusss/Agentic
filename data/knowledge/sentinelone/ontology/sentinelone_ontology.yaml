@@ -73,18 +73,39 @@ entities:
     relationship: belongs_to_storyline
     via_attribute: storylineId
   enums:
+    # Re-sampled live in Milestone 7 (list_alerts, first=50, view_type=ALL)
+    # -- M1/M2's 5-item discovery sample badly undercounted this space (had
+    # only INFO/NEW+RESOLVED/2 verdicts/MANUAL). All values below are raw
+    # values actually returned by this tenant's Alerts GraphQL API for a
+    # real 50-alert sample, confirmed genuinely self-mapping (SentinelOne's
+    # current API returns human-readable enum strings directly, not numeric
+    # codes needing translation) -- "enum decoding" on this tenant is a
+    # validated-membership check against this table, not a code lookup.
+    # Still not proven exhaustive at n=50 of 385+ total alerts.
     alert_severity:
       INFO: INFO
+      LOW: LOW
+      MEDIUM: MEDIUM
+      HIGH: HIGH
+      CRITICAL: CRITICAL
     alert_status:
       NEW: NEW
+      IN_PROGRESS: IN_PROGRESS
       RESOLVED: RESOLVED
     alert_analyst_verdict:
-      FALSE_POSITIVE_BENIGN: FALSE_POSITIVE_BENIGN
       UNDEFINED: UNDEFINED
+      FALSE_POSITIVE_BENIGN: FALSE_POSITIVE_BENIGN
+      FALSE_POSITIVE_UNDEFINED: FALSE_POSITIVE_UNDEFINED
+      TRUE_POSITIVE_UNDEFINED: TRUE_POSITIVE_UNDEFINED
+      TRUE_POSITIVE_BENIGN: TRUE_POSITIVE_BENIGN
+      TRUE_POSITIVE_BENIGN_BUT_SUSPICIOUS: TRUE_POSITIVE_BENIGN_BUT_SUSPICIOUS
     alert_classification:
       MANUAL: MANUAL
+      MALWARE: MALWARE
+      RANSOMWARE: RANSOMWARE
   lifecycle_states:
   - NEW
+  - IN_PROGRESS
   - RESOLVED
   tool_bindings:
   - tool: search_alerts
@@ -101,8 +122,10 @@ entities:
     purpose: Purple AI auto-investigation report for one alert
   in_scope: true
 - entity: Vulnerability
-  description: SentinelOne vulnerability finding. Confirmed licensed and populated in this tenant (Milestone
-    1).
+  description: SentinelOne vulnerability finding. Confirmed licensed and populated in this tenant.
+    Corrected Milestone 7 -- Milestone 1 concluded this entity was near-empty (population checked
+    via search_vulnerabilities' totalCount field, camelCase, which this tool does not return); the
+    real count, read from the correct total_count (snake_case) key, is 37,863 records.
   attributes:
   - name: asset
     type: object
@@ -146,8 +169,15 @@ entities:
     relationship: affects
     via_attribute: asset
   enums:
+    # Re-sampled live Milestone 7 via per-severity total_count queries
+    # (search_vulnerabilities filtered by severity, first=1 each) now that
+    # the real record count (37,863) is known. INFO returned 0 -- unlike
+    # Alert severity, INFO is not a populated tier for Vulnerability here.
     vulnerability_severity:
       CRITICAL: CRITICAL
+      HIGH: HIGH
+      MEDIUM: MEDIUM
+      LOW: LOW
   tool_bindings:
   - tool: search_vulnerabilities
     purpose: filtered search

@@ -114,16 +114,30 @@ threats:
   - severity
   - status
   - storylineId
+  # Re-sampled Milestone 7 (list_alerts, first=50, view_type=ALL): the
+  # original 5-item M1 discovery sample badly undercounted this space.
+  # Still not proven exhaustive at n=50 of 385+ total alerts.
   lifecycle_states_observed: &id002
   - NEW
+  - IN_PROGRESS
   - RESOLVED
   severities_observed: &id001
   - INFO
+  - LOW
+  - MEDIUM
+  - HIGH
+  - CRITICAL
   analyst_verdicts_observed: &id003
-  - FALSE_POSITIVE_BENIGN
   - UNDEFINED
+  - FALSE_POSITIVE_BENIGN
+  - FALSE_POSITIVE_UNDEFINED
+  - TRUE_POSITIVE_UNDEFINED
+  - TRUE_POSITIVE_BENIGN
+  - TRUE_POSITIVE_BENIGN_BUT_SUSPICIOUS
   classifications_observed: &id004
   - MANUAL
+  - MALWARE
+  - RANSOMWARE
 storylines:
   structure: each alert node carries a storylineId field; pivoting means filtering search_alerts on that
     storylineId (fulltext filter type) across the tenant, per the Task Execution Protocol's storyline
@@ -144,7 +158,20 @@ incidents: no distinct 'incidents' entity/tool exists in this MCP server -- Aler
   concept observed
 vulnerabilities:
   licensed_or_enabled: true
-  current_count: unavailable (totalCount not returned by search_vulnerabilities)
+  # Corrected Milestone 7: the original 'unavailable' conclusion checked the
+  # wrong key name (totalCount, camelCase, copying the Alerts convention).
+  # search_vulnerabilities/list_vulnerabilities actually return total_count
+  # (snake_case) -- confirmed live. Re-checked by severity filter for a
+  # per-value breakdown (four separate first=1 count-only queries):
+  current_count: 37863
+  current_count_by_severity:
+    CRITICAL: 4890
+    HIGH: 15461
+    MEDIUM: 14950
+    LOW: 907
+  count_field_note: 'search_vulnerabilities/list_vulnerabilities return total_count/page_info
+    (snake_case), not totalCount/pageInfo (camelCase) like Alerts -- see mcp_tools.md''s
+    "Critical corrections" section.'
   schema_fields_observed:
   - asset
   - cve
@@ -158,8 +185,14 @@ vulnerabilities:
   - software
   - status
   - vendor
+  # Corrected Milestone 7: re-sampled by severity filter now that the real
+  # count (37,863) is known -- INFO and a literal "NONE" probe both
+  # returned 0, only these four severities are actually populated.
   severities_observed: &id005
   - CRITICAL
+  - HIGH
+  - MEDIUM
+  - LOW
 applications:
   note: no dedicated 'applications' tool distinct from vulnerabilities/inventory observed
 identity:
