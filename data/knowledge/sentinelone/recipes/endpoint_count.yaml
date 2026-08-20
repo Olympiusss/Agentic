@@ -1,0 +1,26 @@
+recipe_id: endpoint_count
+intent: endpoint_count
+inputs: []
+tool_calls:
+- tool: list_inventory_items
+  parameters:
+    limit: 1000
+    surface: ENDPOINT
+    fetch_fields: MINIMAL
+  purpose: >-
+    fetch the maximum page size and count len(data) -- neither
+    search_inventory_items nor list_inventory_items expose a distinct
+    total-count field (pagination is confirmed always {} regardless of
+    limit or result size, live-checked at limit=1, 10, and 1000). If the
+    returned page is exactly at the limit, the true count may be higher;
+    report as a lower bound in that case, never as a confirmed total.
+expected_result_shape: integer count of endpoints (this run, live-confirmed -- 53)
+validated_edge_cases:
+- case: paginated
+  observed_behavior: 'pagination field confirmed always {} at limit=1, limit=10, and
+    limit=1000 -- this tool genuinely does not report a total distinct from the
+    returned page. len(data) at limit=1000 returned exactly 53, matching the
+    already-confirmed real endpoint count from Milestone 8''s agent_health work
+    -- treated as exhaustive here because 53 < 1000, not because a total field
+    confirmed it.'
+status: stable

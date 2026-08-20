@@ -86,13 +86,17 @@ rows:
   source_module: Inventory
   # Corrected Milestone 8: confirmed live that search_inventory_items rejects
   # both "networkStatus" and "agent.networkStatus" as filters (400: Unknown
-  # field) -- the nested agent object (upToDate, networkStatus, isInfected)
-  # is readable but NOT server-filterable. infectionStatus/assetStatus are
-  # the only real server-side filters (confirmed M4); assetStatus is a
-  # management/lifecycle axis, not connectivity -- "offline" specifically
-  # requires fetching broadly and classifying agent.networkStatus
-  # client-side. See recipes/agent_health.yaml's corrected tool_calls.
-  retrieval_path: 'search_inventory_items(filters={"infectionStatus"|"assetStatus": [...]}) for infection/lifecycle state; list_inventory_items(fetch_fields=ALL) + client-side classification of agent.networkStatus for connectivity ("offline") specifically -- no separate "Agents" tool exists in this MCP server, confirmed Milestone 0/2'
+  # field) -- the nested agent object (upToDate, networkStatus, isInfected,
+  # consoleConnectivity) is readable but NOT server-filterable.
+  # infectionStatus/assetStatus are the only real server-side filters
+  # (confirmed M4); assetStatus is a management/lifecycle axis, not
+  # connectivity -- "offline" specifically requires fetching broadly and
+  # classifying agent.consoleConnectivity client-side (corrected
+  # 2026-08-06 -- was agent.networkStatus, confirmed live not to track
+  # real connectivity at all; see recipes/agent_health.yaml's corrected
+  # edge cases for the full story). See recipes/agent_health.yaml's
+  # corrected tool_calls.
+  retrieval_path: 'search_inventory_items(filters={"infectionStatus"|"assetStatus": [...]}) for infection/lifecycle state; list_inventory_items(fetch_fields=ALL) + client-side classification of agent.consoleConnectivity for connectivity ("offline") specifically -- no separate "Agents" tool exists in this MCP server, confirmed Milestone 0/2'
   expected_result_shape: list of endpoints filtered by health/connectivity state
   priority: gap_closing
   # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
@@ -118,14 +122,171 @@ rows:
 
 # --- Everything else the tenant's real tool surface supports ---
 
+- question_class: endpoint_count
+  example:
+  - how many endpoints do we have in total
+  - what is the total number of devices in my environment
+  - give me the total count of assets we manage
+  - how many devices do we manage in total
+  - what's our total endpoint count
+  - how many machines are in my environment in total
+  target_entity: InventoryItem
+  source_module: Inventory
+  # Added post-Phase-2 after a real production question ("what about
+  # endpoints?", following up a threat-count question) was misrouted to
+  # host_lookup -- which requires a specific hostname and can't answer an
+  # aggregate count at all. Confirmed live: neither search_inventory_items
+  # nor list_inventory_items expose a total-count field distinct from the
+  # returned page -- `pagination` is confirmed always {} at limit=1, 10,
+  # and 1000. The only way to get a real total is to fetch at the tool's
+  # max limit (1000) and count len(data), honestly reported as a lower
+  # bound (not a confirmed exhaustive total) if the page comes back full.
+  retrieval_path: 'list_inventory_items(limit=1000, surface="ENDPOINT") -> count len(data); report as a lower bound if len(data) == 1000'
+  expected_result_shape: integer count of endpoints (this run, live-confirmed -- 53)
+  priority: high
+  status: stable
+  forbidden_source: Sentry internal findings store
+  elicited_by: 'real user question during production use, 2026-07-30: "what about endpoints?" was misrouted to host_lookup because no aggregate-count class existed'
+
+- question_class: group_count
+  example:
+  - how many groups are there in my environment
+  - what groups exist in our tenant
+  - list the groups we have configured
+  - show me our group hierarchy
+  - what are the endpoint groups in this account
+  - how many groups do we have
+  target_entity: InventoryItem
+  source_module: Inventory
+  # Added post-Phase-2 after a real production question ("how many groups
+  # are there in my environment?") was misrouted to endpoint_count -- a
+  # confidently wrong, fully-grounded answer (an endpoint total presented
+  # as if it answered a groups question). No dedicated account/site/group
+  # tool exists in this MCP server (confirmed Milestone 1); groups are only
+  # recoverable as the s1GroupId/s1GroupName fields carried on every
+  # InventoryItem endpoint record, per environment_map.yaml's tenant.identity
+  # section (this tenant has 3 real groups: Product Engineer, Brand and
+  # Marketing, Admin, under one site "Cybervergent" under one account "MU
+  # ||EXN ROA - Upfront - CyberVergent Ltd"). "Groups" here means this
+  # organizational/scope hierarchy concept specifically -- distinct from
+  # SentinelOne's separate "Threat Groups" concept (grouping alerts/threats
+  # by hash/family in the Incidents view), which is not covered by this row.
+  retrieval_path: 'list_inventory_items(limit=1000, surface="ENDPOINT", fetch_fields="ALL") -> extract distinct s1GroupName per item; report as a lower bound if len(data) == 1000 (more endpoints could carry additional not-yet-seen groups)'
+  expected_result_shape: 'integer count of distinct groups plus their names (this run, live-confirmed -- 3 groups: Product Engineer, Brand and Marketing, Admin)'
+  priority: high
+  status: stable
+  forbidden_source: Sentry internal findings store
+  elicited_by: 'real user question during production use, 2026-07-30: "how many groups are there in my environment?" was misrouted to endpoint_count -- a wrong count presented with full grounding'
+
+- question_class: incident_status
+  example:
+  - what's our incident status breakdown
+  - how many resolved incidents do we have
+  - how many unresolved incidents are there
+  - what's the status of our incidents
+  - how many incidents are still open
+  - break down our incidents by status
+  target_entity: Alert
+  source_module: SentinelOne Alerts
+  # Milestone 9. Live re-probe (get_alert_history on 7 real alerts across
+  # mixed severity/classification) confirmed "Incidents" is not a distinct
+  # entity -- SentinelOne's own audit-trail text says "changed the incident
+  # status ... from Unresolved to Resolved" when Alert.status changes.
+  # "Incident Status" is this tenant's own console label for Alert.status
+  # (NEW/IN_PROGRESS/RESOLVED). Confirmed live that status IS a real
+  # server-side filter on search_alerts (string_equals), same technique
+  # already used for vulnerability severity breakdowns.
+  retrieval_path: 'search_alerts(filters=[{"fieldId":"status","filterType":"string_equals","value":"NEW"|"IN_PROGRESS"|"RESOLVED"}], first=1) once per status value -> read totalCount for each'
+  expected_result_shape: 'per-status counts (this run, live-confirmed -- NEW 260, IN_PROGRESS 3, RESOLVED 129)'
+  priority: high
+  status: stable
+  forbidden_source: Sentry internal findings store
+  elicited_by: 'Milestone 9 full-scope coverage audit -- "Incidents" branch of the tenant hierarchy diagram'
+
+- question_class: tenant_structure
+  example:
+  - describe our tenant structure
+  - how many accounts do we have
+  - how many sites do we have
+  - what accounts and sites exist in our environment
+  - show me our account and site hierarchy
+  - what's the structure of our tenant
+  target_entity: InventoryItem
+  source_module: Inventory
+  # Milestone 9, Phase 2. Formalizes Account/Site alongside the existing
+  # group_count row -- same "no dedicated tool, recovered via InventoryItem
+  # fields" technique, unified into one recipe per the approved design
+  # (this tenant currently has exactly 1 account, 1 site; a future
+  # multi-tenant client with a genuinely different shape is handled by the
+  # same dynamic extraction, not hardcoded to today's counts). Deliberately
+  # separate from group_count (which stays its own row, already stable and
+  # router-calibrated) rather than merged into it, to avoid re-touching a
+  # row that already required real router-separation tuning this session.
+  retrieval_path: 'list_inventory_items(limit=1000, surface="ENDPOINT", fetch_fields="ALL") -> extract distinct s1AccountName and s1SiteName per item (same technique as group_count)'
+  expected_result_shape: 'account and site names/counts (this run, live-confirmed -- 1 account "MU ||EXN ROA - Upfront - CyberVergent Ltd", 1 site "Cybervergent")'
+  priority: high
+  status: stable
+  forbidden_source: Sentry internal findings store
+  elicited_by: 'Milestone 9 full-scope coverage audit -- Accounts/Sites branches of the tenant hierarchy diagram, never previously formalized'
+
+- question_class: application_risk
+  example:
+  - what applications carry the most risk in our environment
+  - which applications have the most vulnerabilities
+  - show me our application risk breakdown
+  - what software is driving our vulnerability count
+  - give me an application risk summary
+  - which apps should we prioritize patching
+  target_entity: Vulnerability
+  source_module: Vulnerability Management
+  # Milestone 9, Phase 3. Matches the screenshot's "Application Risks" table.
+  # No dedicated Applications tool exists (confirmed) -- this is a DERIVED
+  # view over Vulnerability.software.name (a nested field, distinct from the
+  # always-constant top-level product/vendor fields, which name the
+  # detecting tool "Singularity Vulnerability Management"/"SentinelOne", not
+  # the affected application -- a real trap the live probe caught). Live-
+  # confirmed search_vulnerabilities caps `first` at 100 (not 1000 like
+  # Inventory), and a single-severity sample is badly clustered (one
+  # first=100 CRITICAL-only sample came back 100% Mozilla Firefox, matching
+  # a bulk same-timestamp detection batch) -- not representative. The
+  # recipe instead samples 100 records from EACH of the 4 severities
+  # concurrently (asyncio.gather, ~1 round-trip's latency, not 4x) for a
+  # 400-record cross-section, identifies the top applications by sample
+  # frequency, then runs exact softwareName-filtered count-only follow-ups
+  # (confirmed server-filterable) for just those top few -- exact counts
+  # for what matters most, an honest "sample, not a census" caveat for the
+  # long tail. Never presents the 400-record sample's raw counts as if they
+  # were tenant-wide totals.
+  retrieval_path: 'search_vulnerabilities(filters=[severity=X], first=100) concurrently for X in [CRITICAL,HIGH,MEDIUM,LOW] -> aggregate by software.name -> exact softwareName-filtered total_count follow-up for the top applications found'
+  expected_result_shape: 'top applications by vulnerability count with exact totals for the top few (this run, live-confirmed -- Google Chrome and Mozilla Firefox dominant, ~13 distinct applications total across a 400-record cross-section)'
+  priority: high
+  status: stable
+  forbidden_source: Sentry internal findings store
+  elicited_by: 'Milestone 9 full-scope coverage audit -- Applications branch of the tenant hierarchy diagram, matching the SentinelOne console screenshot''s Application Risks table'
+
 - question_class: threat_detail
   example:
   - tell me more about alert <id>
   - what triggered this detection
+  - what response actions were taken on this alert
+  - was this threat remediated
+  - who resolved this alert
   target_entity: Alert
   source_module: SentinelOne Alerts
-  retrieval_path: 'get_alert(alert_id) (+ get_alert_notes / get_alert_history / get_alert_investigation_report as needed)'
-  expected_result_shape: full alert record -- severity, verdict, classification, detection source, asset, storylineId
+  # Enriched Milestone 9: get_alert_history's real content (live-sampled on
+  # 7 alerts) resolves two tenant-hierarchy branches that would otherwise
+  # need their own fragile, hard-to-separate router classes: Response
+  # Actions (MITIGATION_ACTION/MITIGATION_RESULT events -- quarantine/kill,
+  # success/fail, which endpoint agent performed it) and Administrators
+  # (STATUS/ANALYST_VERDICT/NOTES events attributed to a named human
+  # "management user", e.g. who resolved or changed the verdict on this
+  # specific alert -- real per-alert attribution, not a tenant-wide admin
+  # directory, which no tool provides). Folded into this existing recipe's
+  # answer rather than split into new question_classes, since "what
+  # happened to this alert" is the same underlying question threat_detail
+  # already answers.
+  retrieval_path: 'get_alert(alert_id) + get_alert_history(alert_id) (notes/investigation-report tools as needed) -- history entries summarized in the answer (status/verdict changes with who made them, mitigation actions taken with result)'
+  expected_result_shape: full alert record -- severity, verdict, classification, detection source, asset, storylineId, plus a summary of status/verdict changes (with attribution) and any response/mitigation actions taken
   priority: high
   # Corrected Milestone 7: the bound recipe in data/knowledge/sentinelone/recipes/
   # has carried `status: stable` since Milestone 4's live validation run; this
@@ -153,13 +314,54 @@ rows:
   - find living-off-the-land binaries spawned from Microsoft Word
   - are there any reverse SSH tunnels from public IPs
   - show me PowerShell processes that connected to external IPs
+  - find file modification events where the file was renamed to .locked or .encrypted
+  - show me file downloads ending in .zip, .iso, or .html
+  - find executions of whoami, nltest, or net commands
+  - did anyone try to disable Windows Defender or kill security processes
+  - find PowerShell or PsExec executions with an encoded command line
+  - show me any references to lsass, procdump, or mimikatz
+  - find registry modifications to Run or RunOnce autostart keys
+  - show me rundll32 process executions
+  - find PsExec-style lateral movement between hosts
+  - show me DNS requests that might indicate data exfiltration
   target_entity: 'DeepVisibilityEvent (not yet formalized as an ontology entity -- Milestone 5''s DV cookbook does this)'
   source_module: Deep Visibility / PowerQuery
-  retrieval_path: 'purple_ai(natural-language question) -> generated PowerQuery string -> powerquery(query, start_datetime, end_datetime), run exactly as generated -- never hand-composed, per the tool''s own documented instructions (data/knowledge/sentinelone/mcp_tools.md)'
+  # Corrected post-Phase-2: purple_ai() is confirmed permanently down (not a
+  # transient outage -- consistent AuthZ failure across Milestones 5-8 and
+  # months later). Letting the model retry it live produced a real, painful
+  # UX failure (visible multi-turn retry thrash burning tokens, ending in a
+  # wrong "the tool has limitations" message). Retrieval path is now a
+  # two-level match: this row's own embedding match confirms the question is
+  # DV-hunt-shaped, then services/sentinelone_recipe_executor.py's dv_hunt
+  # executor does a second match against data/knowledge/sentinelone/dv_cookbook/'s
+  # 11 hand-composed, MITRE-tagged templates (services/sentinelone_retrieval_store.py,
+  # source="dv_hunt_template") to pick the specific one, and runs it directly
+  # via powerquery() -- purple_ai() is never called.
+  retrieval_path: 'router match -> dv_cookbook template retrieval (best match by embedding similarity) -> powerquery(query, start_datetime, end_datetime) using that template''s query -- never purple_ai(), confirmed permanently unavailable'
   mitre_technique: []
-  expected_result_shape: varies by hunt pattern; MITRE tagging happens per-template in Milestone 5, not at this row's level
+  expected_result_shape: varies by hunt pattern; MITRE tagging happens per-template. Every answer states it is from a hand-composed template, not Purple-AI-verified.
   priority: medium
+  status: stable
+
+- question_class: users
+  example:
+  - do we have a directory of user accounts
+  - list our users
+  - what user accounts exist in our tenant
+  - show me a roster of user logins
+  target_entity: InventoryItem
+  source_module: Inventory
+  # Milestone 9. No dedicated Users tool/entity exists. InventoryItem
+  # carries an osUsername field, but the ontology's own population sample
+  # marks it "rarely_present" (Milestone 1/8) -- not reliable enough for a
+  # real "who's logged in" or "list our users" capability. This is
+  # different from Policy/Forensics (zero tool support at all) -- a field
+  # exists, it's just too sparse to build on confidently.
+  retrieval_path: 'InventoryItem.osUsername exists but is rarely populated (confirmed Milestone 1/8 sampling) -- not a reliable basis for a Users capability; no dedicated Users/Identity directory tool exists in this MCP server'
+  expected_result_shape: "state that a sparse, unreliable osUsername field is the only related data available, not a real user directory or login history"
+  priority: low
   status: not_started
+  elicited_by: 'Milestone 9 full-scope coverage audit -- Users branch of the tenant hierarchy diagram'
 
 - question_class: identity_security
   example:
@@ -176,10 +378,62 @@ rows:
   example:
   - who changed this policy
   - what admin actions happened this week
-  target_entity: 'ActivityLogEntry (no tool binding exists in this MCP server)'
+  - list our tenant administrators
+  - show me the audit log
+  target_entity: 'ActivityLogEntry (no tenant-wide audit-log tool exists in this MCP server)'
+  source_module: none -- no tenant-wide tool exists
+  # Corrected Milestone 9: this row previously claimed "no Activities/Audit
+  # Log tool exists anywhere" -- overbroad. A live re-probe (get_alert_history
+  # on real alerts) found real, working per-alert audit data with named
+  # human attribution (see AdminActionLog ontology entity, threat_detail's
+  # Milestone 9 enrichment). What's still genuinely absent, confirmed by the
+  # complete 33-tool scan: (1) a TENANT-WIDE admin action log ("what admin
+  # actions happened this week", across the whole tenant, not one alert),
+  # (2) a directory/roster of administrator accounts, (3) any policy-change
+  # log (Policy itself has zero tool support -- see the `policy` row). This
+  # row now covers exactly those three genuinely-missing things; "who
+  # resolved/changed this specific alert" is threat_detail's job, not this
+  # row's.
+  retrieval_path: no tenant-wide Activities/Audit Log tool or Administrators directory tool exists anywhere in this MCP server's 33-tool inventory (data/knowledge/sentinelone/mcp_tools.md) -- per-alert attribution is threat_detail's job (get_alert_history), not this row's
+  expected_result_shape: "state plainly that no tenant-wide audit log or administrator directory exists in this tool surface; point to threat_detail for a specific alert's who-did-what"
+  priority: low
+  status: not_started
+
+- question_class: policy
+  example:
+  - what policies do we have configured
+  - show me our global policies
+  - what's our policy assignment for this endpoint
+  - list our endpoint protection policies
+  target_entity: Policy
   source_module: none -- no tool exists
-  retrieval_path: no Activities/Audit Log tool exists anywhere in this MCP server's 33-tool inventory (data/knowledge/sentinelone/mcp_tools.md)
-  expected_result_shape: "state plainly that no retrieval path exists in this tool surface; do not improvise a query"
+  # Milestone 9. Covers Policies, Global Policies, and Policy Assignments
+  # as one row -- all three are the same underlying non-capability.
+  # Confirmed by a complete scan of all 33 tools in this purple-mcp v0.7.0
+  # server: zero tools target policy configuration or assignment.
+  # misconfiguration policyId/policyGroup fields are CSPM/IaC detection
+  # policies, a genuinely different concept, not a substitute. Integration
+  # ceiling, not unfinished engineering -- closing it needs either a newer
+  # purple-mcp release or a separate, direct SentinelOne Management Console
+  # API integration.
+  retrieval_path: no Policy/Policy-Assignment tool exists anywhere in this MCP server's 33-tool inventory (data/knowledge/sentinelone/mcp_tools.md) -- confirmed integration-level limitation, not a gap further engineering on this codebase can close
+  expected_result_shape: "state plainly that no policy retrieval path exists in this tool surface; name the specific limitation, don't fall back to a generic refusal"
+  priority: low
+  status: not_started
+
+- question_class: forensics
+  example:
+  - pull the forensic timeline for this endpoint
+  - do we have memory or disk artifacts for this incident
+  - show me forensic evidence for this alert
+  target_entity: Forensics
+  source_module: none -- no tool exists
+  # Milestone 9. Confirmed by a complete scan of all 33 tools: zero tools
+  # target forensic artifacts (disk/memory images, timeline reconstruction
+  # beyond what get_alert_history/storyline_pivot already cover). Same
+  # integration-ceiling category as `policy`.
+  retrieval_path: no Forensics tool exists anywhere in this MCP server's 33-tool inventory (data/knowledge/sentinelone/mcp_tools.md) -- confirmed integration-level limitation
+  expected_result_shape: "state plainly that no forensic-artifact retrieval path exists in this tool surface; point to storyline_pivot/threat_detail for what timeline reconstruction IS available"
   priority: low
   status: not_started
 

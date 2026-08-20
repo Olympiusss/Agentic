@@ -1,0 +1,30 @@
+template_id: ransomware_file_encryption_extensions
+hunt_pattern: impact
+mitre:
+- tactic: Impact
+  technique_id: T1486
+  technique_name: Data Encrypted for Impact
+query_source:
+  natural_language_prompt: Show me file modification events where the file name ends in .locked or .encrypted
+  resulting_query: event.category = "file" and (file.path contains ".locked" or file.path contains ".encrypted")
+    | columns event.time, endpoint.name, file.path | limit 5
+  purple_ai_status: purple_ai() failed systemically this session (confirmed via diagnostic probe, not
+    a phrasing issue -- see field_dictionary.yaml). This query is hand-composed from confirmed field_dictionary.yaml
+    fields as a fallback, per explicit user direction, and has NOT been generated or verified by purple_ai()
+    the documented way.
+  confidence_note: 'Adapted from a user-supplied query example (SentinelOne queries and Prompts.pdf, #2)
+    that targeted TgtFilePath with Contains Anycase -- neither that field name nor case-insensitive
+    Contains is confirmed on this tenant, so this uses the confirmed field_dictionary.yaml field
+    (file.path) and confirmed operator (contains) instead. Coarse: a file-extension match, not real
+    encryption/entropy detection -- will miss ransomware that doesn''t rename extensions and may
+    false-positive on legitimately encrypted/archived files.'
+default_window: PT24H
+result_cap: 5
+false_positives_observed: []
+triage_status: not independently triaged this session -- ran_without_error and result_sample below are
+  the only evidence checked
+status: experimental
+validation_result:
+  ran_without_error: true
+  error: null
+  result_sample: ''

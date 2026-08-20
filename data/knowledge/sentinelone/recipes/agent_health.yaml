@@ -14,7 +14,9 @@ inputs:
   required: false
   default: null
   # one of: connected, disconnected -- NOT server-filterable, see tool_calls
-  # below. Client applies this against agent.networkStatus after fetching.
+  # below. Client applies this against agent.consoleConnectivity after
+  # fetching (corrected 2026-08-06 -- was agent.networkStatus; see the
+  # empty_result edge case below for why that field was wrong).
 tool_calls:
 - tool: search_inventory_items
   parameters:
@@ -37,35 +39,44 @@ tool_calls:
     fetch_fields: ALL
   purpose: >-
     for "which agents are offline"/connectivity questions specifically: fetch broadly and
-    classify agent.networkStatus client-side. Corrected Milestone 8 -- confirmed live that
+    classify agent.consoleConnectivity client-side (corrected 2026-08-06, was
+    agent.networkStatus -- see the corrected empty_result edge case below).
     search_inventory_items rejects both "networkStatus" and "agent.networkStatus" as
     filter fields (API error 400, code 4000010, "filter: dict_values([...]): Unknown
-    field") -- there is NO server-side filter for connectivity state in this tool.
-    assetStatus is a different axis (management/lifecycle, not online/offline) and must
-    not be used as an "offline" proxy -- the recipe's original assetStatus-based
-    approach to "which agents are offline" was a mistaken proxy, not a real answer.
+    field") -- there is NO server-side filter for connectivity state in this tool, for
+    either field. assetStatus is a different axis (management/lifecycle, not
+    online/offline) and must not be used as an "offline" proxy -- the recipe's original
+    assetStatus-based approach to "which agents are offline" was a mistaken proxy, not a
+    real answer.
 expected_result_shape: list of endpoints matching the requested health/connectivity state.
-  For connectivity specifically, this is a client-side filter over agent.networkStatus,
+  For connectivity specifically, this is a client-side filter over agent.consoleConnectivity,
   not a server-side query result.
 validated_edge_cases:
 - case: empty_result
   observed_behavior: real infectionStatus=Infected query returned 2 item(s); real assetStatus=Active query
     returned 10 item(s) -- both real filters confirmed working, an empty list means no matching endpoints,
     not an error
-- case: empty_result
-  observed_behavior: 'Corrected Milestone 8: live-sampled 50/50 real endpoints via
-    list_inventory_items(fetch_fields=ALL) and every single one has
-    agent.networkStatus="connected", agent.isInfected=false, agent.upToDate=true right
-    now -- this tenant genuinely has zero offline/infected/outdated agents at present.
-    "Which agents are offline" therefore has a real, honest answer of zero, not an
-    untested code path. The exact string value for the disconnected counterpart
-    ("disconnected", inferred from SentinelOne''s networkStatus/networkStatusTitle
-    naming convention seen on the connected value) has NOT been independently observed
-    live in this tenant -- do not report it as confirmed.'
+- case: wrong_field_corrected_2026_08_06
+  observed_behavior: 'Milestone 8 sampled 50/50 real endpoints via
+    list_inventory_items(fetch_fields=ALL), saw agent.networkStatus="connected" on every
+    single one, and concluded "this tenant genuinely has zero offline agents at
+    present." That conclusion was wrong -- confirmed live 2026-08-06 (dashboard fix +
+    a real user report of a chat query answering "1 of 55" when most endpoints were
+    actually offline) that agent.networkStatus reads "connected" almost
+    unconditionally and does not track real connectivity: a specific endpoint
+    confirmed stale for 3 real days (via its own top-level lastActiveDt) still
+    reported networkStatus="connected". agent.consoleConnectivity is the field that
+    actually varies with live state (confirmed false for that same stale endpoint,
+    and for several others, in the same sample where networkStatus stayed
+    "connected" on all of them) -- this recipe, and
+    services/sentinelone_dashboard_service.py''s agents_offline count, both switched
+    to it. Boolean true/false, not a string like networkStatus.'
 - case: permission_error
   observed_behavior: 'Corrected Milestone 8: search_inventory_items(filters={"networkStatus":
     [...]}) and filters={"agent.networkStatus": [...]} both return a real live 400
     Validation Error ("Unknown field") -- confirmed this is a genuine API constraint,
     not a transient failure. Do not retry with a different filter spelling; use the
-    client-side classification tool_call above instead.'
+    client-side classification tool_call above instead. Same constraint applies to
+    agent.consoleConnectivity -- never attempted as a server-side filter after this
+    was found for the sibling field, treat as equally unsupported.'
 status: stable

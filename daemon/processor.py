@@ -1,6 +1,7 @@
 """AI processing pipeline for finding triage and enrichment."""
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 from typing import Optional, Dict, List, Any
@@ -8,6 +9,25 @@ from typing import Optional, Dict, List, Any
 from daemon.config import ProcessingConfig
 
 logger = logging.getLogger(__name__)
+
+# Observability gap fixed 2026-08-20: daemon/agent_runner.py (the escalated
+# investigation path) has real OTEL spans; this routine triage/enrichment
+# path -- the one most findings actually go through -- had none, making it
+# invisible in tracing. Uses start_as_current_span (a context manager)
+# rather than agent_runner.py's manual start_span()+end() pattern
+# deliberately: start_as_current_span attaches the span to the ambient OTEL
+# context for its duration, which is what lets
+# services/llm_gateway.py::_get_traceparent() (called inside
+# _triage_finding below, via submit_triage) automatically pick up the
+# right parent span and propagate it into the ARQ job. A bare start_span()
+# does not attach to the ambient context, so it would not actually connect
+# the LLM call's span to this one.
+try:
+    from core.telemetry import get_tracer
+
+    _tracer = get_tracer("sentry-agentic.daemon.processor")
+except Exception:
+    _tracer = None
 
 
 class FindingProcessor:
@@ -171,11 +191,25 @@ class FindingProcessor:
         # Wait for shutdown
         await shutdown_event.wait()
 
-        # Cancel workers
-        for worker in workers:
-            worker.cancel()
+        # Runtime-hardening gap fixed 2026-08-19: this used to call
+        # worker.cancel() immediately, hard-cancelling a worker mid-item
+        # (mid-triage/enrichment await) with no chance to finish --
+        # _process_worker's own `while not shutdown_event.is_set()` loop
+        # already supports exiting gracefully between items, this just
+        # never gave it the chance to. Drain first (bounded by the same
+        # DAEMON_SHUTDOWN_GRACE_SECONDS setting daemon/main.py's outer
+        # shutdown uses), then force-cancel whatever's still running.
+        grace = self.config.shutdown_grace_seconds
+        done, pending = await asyncio.wait(workers, timeout=grace)
+        if pending:
+            logger.warning(
+                f"{len(pending)}/{len(workers)} processing worker(s) did not finish within the "
+                f"{grace}s shutdown grace period -- cancelling"
+            )
+            for worker in pending:
+                worker.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
-        await asyncio.gather(*workers, return_exceptions=True)
         logger.info("Finding processor stopped")
 
     async def _process_worker(self, worker_id: int, shutdown_event: asyncio.Event):
@@ -215,55 +249,109 @@ class FindingProcessor:
         finding_id = finding.get("finding_id", "unknown")
         logger.debug(f"Processing finding {finding_id} from {source}")
 
-        try:
-            # Issue #87: scan ingested finding for prompt-injection patterns
-            # before any of its content reaches the LLM. Detect-only in v1.
-            try:
-                from services.prompt_security import scan_for_injection
-
-                desc_patterns = scan_for_injection(
-                    finding.get("description") or ""
-                ).patterns
-                ec = finding.get("entity_context") or {}
-                ec_blob = (
-                    " ".join(str(v) for v in ec.values() if v is not None)
-                    if isinstance(ec, dict)
-                    else str(ec)
-                )
-                ec_patterns = scan_for_injection(ec_blob).patterns
-                if desc_patterns or ec_patterns:
-                    self.stats["sanitization_flagged"] += 1
-                    self._sanitize_finding(finding, source)
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"Sanitization hook error (non-fatal): {e}")
-
-            # Store finding first
-            if self._data_service:
-                await self._store_finding(finding)
-
-            # AI Triage (routed through LLM queue)
-            if self.config.auto_triage_enabled:
-                finding = await self._triage_finding(finding)
-
-            # Enrichment
-            if self.config.auto_enrich_enabled:
-                finding = await self._enrich_finding(finding)
-
-            # Update stored finding with enrichments
-            if self._data_service:
-                await self._update_finding(finding)
-
-            # Check if response is needed
-            await self._evaluate_for_response(finding)
-
-            self.stats["processed"] += 1
-            logger.info(
-                f"Processed finding {finding_id} (severity: {finding.get('severity')})"
+        # Crash-resume checkpoint, gap fixed 2026-08-20: a finding that
+        # reaches _store_finding() is already dedup-guarded by
+        # IngestionService (skips re-ingest of an existing finding_id), so
+        # if the daemon dies between here and "completed" below, the normal
+        # poll-and-ingest path can never naturally reprocess it -- it
+        # "already exists". agent_task_state tracks processing status
+        # separately so daemon startup (daemon/main.py) can find anything
+        # left in_progress and resume just the processing step. Best-effort
+        # throughout: a checkpoint write failure must never block
+        # processing itself.
+        if self._data_service:
+            self._data_service.upsert_task_state(
+                finding_id, "in_progress", stage="started", increment_attempts=True
             )
 
-        except Exception as e:
-            logger.error(f"Error processing finding {finding_id}: {e}")
-            self.stats["errors"] += 1
+        span_cm = (
+            _tracer.start_as_current_span(
+                "process_finding",
+                attributes={
+                    "sentry-agentic.finding.id": finding_id,
+                    "sentry-agentic.finding.source": source or "unknown",
+                },
+            )
+            if _tracer is not None
+            else contextlib.nullcontext()
+        )
+
+        with span_cm:
+            try:
+                # Issue #87: scan ingested finding for prompt-injection patterns
+                # before any of its content reaches the LLM. Detect-only in v1.
+                try:
+                    from services.prompt_security import scan_for_injection
+
+                    desc_patterns = scan_for_injection(
+                        finding.get("description") or ""
+                    ).patterns
+                    ec = finding.get("entity_context") or {}
+                    ec_blob = (
+                        " ".join(str(v) for v in ec.values() if v is not None)
+                        if isinstance(ec, dict)
+                        else str(ec)
+                    )
+                    ec_patterns = scan_for_injection(ec_blob).patterns
+                    if desc_patterns or ec_patterns:
+                        self.stats["sanitization_flagged"] += 1
+                        self._sanitize_finding(finding, source)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"Sanitization hook error (non-fatal): {e}")
+
+                # Store finding first
+                if self._data_service:
+                    await self._store_finding(finding)
+                    self._data_service.upsert_task_state(
+                        finding_id, "in_progress", stage="stored"
+                    )
+
+                # AI Triage (routed through LLM queue)
+                if self.config.auto_triage_enabled:
+                    finding = await self._triage_finding(finding)
+                    if self._data_service:
+                        self._data_service.upsert_task_state(
+                            finding_id, "in_progress", stage="triaged"
+                        )
+
+                # Enrichment
+                if self.config.auto_enrich_enabled:
+                    finding = await self._enrich_finding(finding)
+                    if self._data_service:
+                        self._data_service.upsert_task_state(
+                            finding_id, "in_progress", stage="enriched"
+                        )
+
+                # Update stored finding with enrichments
+                if self._data_service:
+                    await self._update_finding(finding)
+
+                # Check if response is needed
+                await self._evaluate_for_response(finding)
+
+                if self._data_service:
+                    self._data_service.upsert_task_state(
+                        finding_id, "completed", stage="evaluated"
+                    )
+
+                self.stats["processed"] += 1
+                logger.info(
+                    f"Processed finding {finding_id} (severity: {finding.get('severity')})"
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing finding {finding_id}: {e}")
+                self.stats["errors"] += 1
+                if self._data_service:
+                    self._data_service.upsert_task_state(
+                        finding_id, "failed", error=str(e)
+                    )
+                try:
+                    from opentelemetry import trace as _otel_trace
+
+                    _otel_trace.get_current_span().record_exception(e)
+                except Exception:
+                    pass
 
     async def _store_finding(self, finding: Dict[str, Any]):
         """Store finding in database."""
@@ -276,11 +364,25 @@ class FindingProcessor:
             logger.error(f"Failed to store finding: {e}")
 
     async def _update_finding(self, finding: Dict[str, Any]):
-        """Update finding in database."""
+        """Update finding in database.
+
+        Bug found live 2026-08-18 (first real end-to-end run against a
+        genuine SentinelOne alert backlog): DatabaseDataService.update_finding
+        takes `(finding_id: str, **updates)` -- this call was passing the
+        whole `finding` dict as a second POSITIONAL argument
+        ("takes 2 positional arguments but 3 were given" on every single
+        finding). Unpacked as kwargs instead; `finding_id` is excluded
+        since it's already the first positional arg and `finding` itself
+        also carries a `finding_id` key (passing both would raise "got
+        multiple values for argument"). Unknown keys (e.g. `title`,
+        `raw_event`, which aren't real Finding columns) are safe to pass --
+        database/service.py's update_finding skips any key that isn't a
+        real attribute via `hasattr`, never raises on extras."""
         try:
             finding_id = finding.get("finding_id")
             if finding_id and self._data_service:
-                self._data_service.update_finding(finding_id, finding)
+                updates = {k: v for k, v in finding.items() if k != "finding_id"}
+                self._data_service.update_finding(finding_id, **updates)
         except Exception as e:
             logger.error(f"Failed to update finding: {e}")
 

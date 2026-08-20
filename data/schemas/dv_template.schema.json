@@ -12,8 +12,8 @@
     },
     "hunt_pattern": {
       "type": "string",
-      "enum": ["living_off_the_land", "credential_access", "persistence", "process_injection", "lateral_movement", "exfiltration"],
-      "description": "Which of the brief's six core hunt patterns this template covers."
+      "enum": ["living_off_the_land", "credential_access", "persistence", "process_injection", "lateral_movement", "exfiltration", "impact", "discovery", "defense_evasion"],
+      "description": "Which hunt pattern this template covers. The first six are the brief's original core patterns; impact/discovery/defense_evasion were added post-Phase-2 when real-world query examples (ransomware file-encryption, recon commands, security-tooling tampering) didn't map to any of the original six -- extending the enum rather than mis-tagging a genuinely different MITRE tactic into an ill-fitting bucket."
     },
     "mitre": {
       "type": "array",

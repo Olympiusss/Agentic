@@ -104,6 +104,48 @@ KNOWN_AMBIGUOUS_PARAPHRASE_PLAUSIBLE_CLASSES = {
     "host_lookup",
     "storyline_pivot",
     "agent_health",
+    # endpoint_count and dv_hunt added post-Phase-2: "machine"/"host" is
+    # shared vocabulary with both example sets too, and this paraphrase was
+    # already documented above as deliberately weak-signal/generic before
+    # either existed -- still resolves to a sensible ambiguous pair, not a
+    # wrong confident answer. As the matrix grows, this specific fragile
+    # paraphrase is expected to keep picking up new plausible neighbors;
+    # that's the known, accepted cost of it being intentionally generic.
+    "endpoint_count",
+    "dv_hunt",
+}
+
+# Regression for a real production misroute (2026-07-30): "how many groups
+# are there in my environment?" resolved to endpoint_count -- a confidently
+# wrong, fully-grounded answer. group_count now exists specifically to catch
+# this. The bar these paraphrases (never in the index) must clear is "never
+# silently resolves to endpoint_count/threat_count" -- either a confident
+# group_count match, or an honest ambiguous split naming group_count as one
+# of the options, are both safe outcomes; only a confident wrong class is
+# the regression this guards against.
+GROUP_COUNT_PARAPHRASES = [
+    "how many groups do we have in this tenant",
+    "what device groups are configured",
+    "give me a breakdown of our groups",
+]
+
+# Milestone 9: hand-written paraphrases (never in the index) for the new
+# rows added by the full-scope coverage audit. Same "safe = correct class,
+# or an honest ambiguous split naming it, never a confident wrong class"
+# bar as GROUP_COUNT_PARAPHRASES above.
+MILESTONE_9_PARAPHRASES = {
+    "incident_status": [
+        "how many incidents have we resolved",
+        "give me a breakdown of open vs closed incidents",
+    ],
+    "tenant_structure": [
+        "how many accounts and sites do we have",
+        "describe our account and site setup",
+    ],
+    "application_risk": [
+        "which applications are riskiest right now",
+        "what software should we prioritize patching",
+    ],
 }
 
 OUT_OF_MATRIX_QUESTIONS = [
@@ -149,14 +191,57 @@ def main() -> None:
 
     print()
     print("=" * 70)
+    print("2b. group_count regression (was misrouted to endpoint_count)")
+    print("=" * 70)
+    for question in GROUP_COUNT_PARAPHRASES:
+        decision = router.route(question)
+        safe = (
+            decision.question_class == "group_count"
+            and decision.decision_type in ("routed", "hard_bound")
+        ) or (
+            decision.decision_type == "ambiguous"
+            and "group_count" in decision.disambiguation_options
+        )
+        check(
+            f"'{question}' never silently resolves to endpoint_count/threat_count",
+            safe,
+            f"got {_summary(decision)}",
+        )
+
+    print()
+    print("=" * 70)
+    print("2c. Milestone 9 new-row paraphrases (never in the index)")
+    print("=" * 70)
+    for qc, paraphrases in MILESTONE_9_PARAPHRASES.items():
+        for question in paraphrases:
+            decision = router.route(question)
+            safe = (
+                decision.question_class == qc
+                and decision.decision_type in ("routed", "hard_bound")
+            ) or (
+                decision.decision_type == "ambiguous"
+                and qc in decision.disambiguation_options
+            )
+            check(
+                f"'{question}' -> {qc} (routed/hard_bound, or honest ambiguous naming it)",
+                safe,
+                f"got {_summary(decision)}",
+            )
+
+    print()
+    print("=" * 70)
     print("3. Ambiguity: a question genuinely between two classes")
     print("=" * 70)
     borderline = "is this endpoint healthy and online"
     decision = router.route(borderline)
-    plausible = {"host_lookup", "agent_health"}
+    # endpoint_count (added post-Phase-2) is a legitimate third plausible
+    # read of this phrasing -- "endpoint" is genuinely topically close to
+    # both a specific-host lookup/health question and an aggregate-count
+    # question. Ambiguity here is correct, safe behavior, not a defect.
+    plausible = {"host_lookup", "agent_health", "endpoint_count"}
     if decision.decision_type == "ambiguous":
         check(
-            f"'{borderline}' ambiguous between host_lookup/agent_health",
+            f"'{borderline}' ambiguous between host_lookup/agent_health/endpoint_count",
             set(decision.disambiguation_options) <= plausible.union(plausible),
             str(decision.disambiguation_options),
         )

@@ -71,6 +71,24 @@ class TaskScheduler:
                 run_on_start=False
             ))
         
+        if self.config.themis_sweep_enabled:
+            self._tasks.append(ScheduledTask(
+                name="themis_sweep",
+                func=self._run_themis_sweep,
+                interval=self.config.themis_sweep_interval,
+                enabled=True,
+                run_on_start=True,
+            ))
+
+        if self.config.argus_sweep_enabled:
+            self._tasks.append(ScheduledTask(
+                name="argus_sweep",
+                func=self._run_argus_sweep,
+                interval=self.config.argus_sweep_interval,
+                enabled=True,
+                run_on_start=False,  # dashboard cache needs its own first refresh before there's anything to verify
+            ))
+
         if self.config.report_generation_enabled:
             self._tasks.append(ScheduledTask(
                 name="weekly_report",
@@ -140,6 +158,49 @@ class TaskScheduler:
                 ))
         except Exception as e:  # noqa: BLE001
             logger.warning(f"SentinelOne environment cache refresh unavailable: {e}")
+
+        # SentinelOne endpoint->site (client name) map refresh -- bug found
+        # live 2026-08-18: capabilities/synergy.py's client-name resolution
+        # (get_site_for_endpoint) reads services/sentinelone_dashboard_service.py's
+        # module-level _endpoint_site_map cache, but that cache is only ever
+        # populated by that service's own refresh_snapshot()/background
+        # refresh loop -- which nothing in this process (soc-daemon runs as
+        # a SEPARATE process from backend, with its own Python module state)
+        # ever called. Every real alert notification the daemon sent showed
+        # "Client: unknown client" as a result, even for endpoints that do
+        # have a real site in SentinelOne. Registered unconditionally (same
+        # style as the poller itself) since it's a live SentinelOne call
+        # that should simply no-op/log a warning if not configured, not a
+        # separate enable flag.
+        self._tasks.append(ScheduledTask(
+            name="sentinelone_client_map_refresh",
+            func=self._run_sentinelone_client_map_refresh,
+            interval=300,
+            enabled=True,
+            run_on_start=True,
+        ))
+
+        # Resident 24h brief (Hermes/reporter, capabilities/brief.py) --
+        # built 2026-08-03, never wired into this scheduler until now. Off
+        # by default and requires an explicit owner, per the capability's
+        # own guardrail ("confirm the owner, format, and delivery channel
+        # before enabling it") -- see DAEMON_BRIEF_ENABLED/DAEMON_BRIEF_OWNER
+        # in daemon/config.py. Persists its result to system_config only
+        # (same pattern as Themis/Argus sweeps below); does NOT email or
+        # notify anyone on its own -- wiring that up is a separate decision.
+        if self.config.brief_enabled and self.config.brief_owner:
+            self._tasks.append(ScheduledTask(
+                name="resident_brief",
+                func=self._run_brief,
+                interval=self.config.brief_interval_hours * 3600,
+                enabled=True,
+                run_on_start=False,
+            ))
+        elif self.config.brief_enabled and not self.config.brief_owner:
+            logger.warning(
+                "DAEMON_BRIEF_ENABLED=true but DAEMON_BRIEF_OWNER is unset -- "
+                "resident brief task NOT registered (owner confirmation is required)"
+            )
 
     def _init_services(self):
         """Initialize required services."""
@@ -324,6 +385,71 @@ class TaskScheduler:
         total_iocs = sum(len(v) for v in iocs.values())
         logger.info(f"Hunting for {total_iocs} IOCs across systems")
     
+    async def _run_themis_sweep(self):
+        """Themis's standing 24/7 system-health sweep (explicit user
+        request: the compliance agent should be checking in on the other
+        agents' performance continuously, not only when a specific
+        finding triggers capabilities/synergy.py's per-finding review).
+        Delegates the actual analysis to capabilities/synergy.py's
+        run_themis_sweep, which persists its verdict to system_config."""
+        logger.info("Running Themis's system-health sweep...")
+        try:
+            from capabilities.synergy import run_themis_sweep
+
+            result = await run_themis_sweep()
+            if result.kind == "answered":
+                logger.info(
+                    f"Themis sweep: {result.findings_reviewed} finding(s) reviewed, "
+                    f"{len(result.systemic_issues)} note(s): {result.systemic_issues}"
+                )
+            else:
+                logger.warning(f"Themis sweep failed: {result.error}")
+            return result
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Themis sweep errored: {e}")
+            self.stats["errors"] += 1
+
+    async def _run_argus_sweep(self):
+        """Argus's standing fact-check sweep (explicit user request,
+        2026-08-05: a sub agent that verifies a subagent response against
+        what is actually on the solution). Re-checks the dashboard
+        snapshot's key reported numbers against fresh live SentinelOne
+        queries and persists the result to system_config, same pattern as
+        Themis's sweep, so the dashboard/chat can surface "last verified"
+        state without re-running the check on every page load."""
+        logger.info("Running Argus's verification sweep...")
+        try:
+            from capabilities.verification import verify_against_dashboard
+            from dataclasses import asdict
+            from datetime import datetime, timezone
+
+            results = await verify_against_dashboard()
+            mismatches = [r for r in results if r.kind == "mismatch"]
+            if mismatches:
+                logger.warning(f"Argus sweep: {len(mismatches)} mismatch(es) found: {[r.claim_type for r in mismatches]}")
+            else:
+                logger.info(f"Argus sweep: {len(results)} claim(s) checked, all matched (or nothing cached yet)")
+
+            try:
+                from database.config_service import get_config_service
+
+                get_config_service().set_system_config(
+                    "argus.verification_results",
+                    {
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                        "results": [asdict(r) for r in results],
+                    },
+                    description="Argus's periodic fact-check sweep (capabilities/verification.py)",
+                    config_type="monitoring",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Argus sweep: failed to persist result: {e}")
+
+            return results
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Argus sweep errored: {e}")
+            self.stats["errors"] += 1
+
     async def _generate_report(self):
         """Generate periodic summary report."""
         logger.info("Generating scheduled report...")
@@ -461,6 +587,69 @@ class TaskScheduler:
             return cache
         except FileNotFoundError as e:
             logger.warning(f"SentinelOne environment cache refresh skipped: {e}")
+
+    async def _run_sentinelone_client_map_refresh(self):
+        """Refresh services/sentinelone_dashboard_service.py's endpoint->site
+        map in THIS process (see the registration comment above for why this
+        is needed) -- a real, live SentinelOne inventory call, same one the
+        dashboard service already makes every 5 minutes for the backend
+        process. Best-effort: any failure just means the next alert's
+        client name stays "unknown client" until the next successful
+        refresh, never blocks polling."""
+        try:
+            from services.sentinelone_dashboard_service import refresh_snapshot
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"SentinelOne client map refresh unavailable: {e}")
+            return
+        try:
+            snapshot = await refresh_snapshot()
+            logger.info(
+                f"SentinelOne client map refreshed: {len(snapshot.sites)} site(s) known for client-name resolution"
+            )
+            return snapshot
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"SentinelOne client map refresh failed: {e}")
+
+    async def _run_brief(self):
+        """Run the resident 24h brief (Hermes/reporter) and persist its
+        result to system_config, same pattern as Themis/Argus sweeps --
+        the frontend/API can read the last brief without re-running it on
+        every request. Does not send email/Telegram; capabilities/brief.py's
+        run_brief() is reporting-only and has no delivery side effect."""
+        logger.info(
+            "Running resident brief (owner=%s)...", self.config.brief_owner
+        )
+        try:
+            from capabilities.brief import run_brief
+
+            outcome = await run_brief(window_hours=self.config.brief_interval_hours)
+            if outcome.kind != "answered":
+                logger.warning(f"Resident brief failed: {outcome.error}")
+                self.stats["errors"] += 1
+                return outcome
+
+            logger.info(
+                f"Resident brief generated at {outcome.generated_at} "
+                f"({len(outcome.evidence)} evidence item(s))"
+            )
+
+            try:
+                from database.config_service import get_config_service
+                from dataclasses import asdict
+
+                get_config_service().set_system_config(
+                    "brief.last_run",
+                    {"owner": self.config.brief_owner, **asdict(outcome)},
+                    description="Resident 24h brief (daemon/scheduler.py, capabilities/brief.py)",
+                    config_type="monitoring",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Resident brief: failed to persist result: {e}")
+
+            return outcome
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Resident brief errored: {e}")
+            self.stats["errors"] += 1
 
     async def _run_health_check(self):
         """Run system health check."""

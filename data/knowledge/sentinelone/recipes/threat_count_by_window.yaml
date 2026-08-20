@@ -1,10 +1,20 @@
 recipe_id: threat_count_by_window
 intent: threat_count
 inputs:
-- name: window_days
+- name: window_amount
   type: integer
   required: false
   default: null
+- name: window_unit
+  type: string
+  required: false
+  default: null
+  # one of: hours, days, weeks, months -- exactly get_timestamp_range's own
+  # parameter names (data/knowledge/sentinelone/mcp_tools.md). Generalized
+  # from the original days-only version after a live production question
+  # ("how many threats in the last 24hrs") exposed that sub-day windows
+  # weren't supported at all -- confirmed live (post-Phase-2) that
+  # get_timestamp_range(hours=24) works identically to days=N.
 tool_calls:
 - tool: search_alerts
   parameters:
@@ -12,8 +22,8 @@ tool_calls:
   purpose: 'unwindowed: totalCount is returned for any query, per the tool''s own documented count pattern'
 - tool: get_timestamp_range
   parameters:
-    days: '{{window_days}}'
-  purpose: when window_days is given, compute the window start first
+    '{{window_unit}}': '{{window_amount}}'
+  purpose: when a window is given, compute the window start first (any of hours/days/weeks/months)
 - tool: iso_to_unix_timestamp
   parameters:
     iso_datetime: '{{offset_time from get_timestamp_range}}'
@@ -23,10 +33,10 @@ tool_calls:
     first: 1
     filters: '[{"fieldId":"createdAt","filterType":"datetime_range","start":"{{start_ms}}"}]'
   purpose: windowed count using the computed start
-expected_result_shape: 'integer count (this run: unwindowed=385, last 7d=10)'
+expected_result_shape: 'integer count (this run: unwindowed=386, last 24h=1)'
 validated_edge_cases:
 - case: empty_result
-  observed_behavior: not tested this pass -- this tenant has 385 real alerts, no genuinely empty state
+  observed_behavior: not tested this pass -- this tenant has 386 real alerts, no genuinely empty state
     to observe without a contrived filter
 status: stable
 regression_fixture: tests/fixtures/threat_count_source.md

@@ -1,0 +1,22 @@
+capability_id: reporter
+role: reporter
+trigger_intent: reporter
+plan: []
+inputs:
+- name: title
+  type: string
+  required: true
+- name: capability_results
+  type: array
+  required: true
+synthesis: >-
+  No LLM synthesis -- Reporter assembles OTHER capabilities' already-
+  grounded outputs (Triage's evidence+assessment, Investigator's timeline,
+  etc.) into one report, verbatim, per the brief's own composition-only
+  rule: Reporter composes capability outputs, it does not invent new
+  retrieval or re-summarize (and risk dropping) a grounding line.
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/reporter.md

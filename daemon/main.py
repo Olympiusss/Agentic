@@ -97,7 +97,55 @@ class SOCDaemon:
             self._metrics_server.orchestrator = self._orchestrator
         
         logger.info("All components initialized")
-    
+
+    async def _resume_stuck_tasks(self):
+        """Crash-resume recovery scan, added 2026-08-20: on a clean
+        shutdown every finding reaches status='completed' in
+        agent_task_state; anything still 'in_progress' means the daemon
+        died mid-processing on it last time. The normal poll-and-ingest
+        path can't naturally catch these (the finding already exists, so
+        IngestionService's dedup skips it) -- this re-queues just the
+        processing step for each one before the poller starts feeding in
+        fresh findings. Best-effort throughout: any failure here must
+        never block the daemon from starting.
+        """
+        try:
+            from services.database_data_service import DatabaseDataService
+
+            data_service = DatabaseDataService()
+        except Exception as e:
+            logger.warning(f"Crash-resume scan skipped (data service unavailable): {e}")
+            return
+
+        try:
+            stuck = data_service.get_stuck_task_states()
+        except Exception as e:
+            logger.warning(f"Crash-resume scan failed (non-fatal): {e}")
+            return
+
+        if not stuck:
+            logger.info("Crash-resume scan: nothing left in_progress from a prior run")
+            return
+
+        logger.warning(
+            f"Crash-resume: found {len(stuck)} finding(s) left in_progress from a "
+            f"prior run -- re-queuing for processing"
+        )
+        for row in stuck:
+            finding_id = row.get("finding_id")
+            try:
+                finding = data_service.get_finding(finding_id)
+                if finding:
+                    await self._processor.input_queue.put(
+                        {"type": "finding", "data": finding, "source": "crash_resume"}
+                    )
+                else:
+                    logger.warning(
+                        f"Crash-resume: finding {finding_id} not found in DB, skipping"
+                    )
+            except Exception as e:
+                logger.warning(f"Crash-resume: failed to re-queue {finding_id}: {e}")
+
     async def run(self):
         """Run the daemon."""
         logger.info("Starting SOC Daemon...")
@@ -110,7 +158,12 @@ class SOCDaemon:
             logger.warning("Signal handlers not supported on this platform")
         
         await self._init_components()
-        
+
+        # Crash-resume: catch anything left mid-flight from a prior,
+        # non-clean shutdown before the poller starts feeding in fresh
+        # findings.
+        await self._resume_stuck_tasks()
+
         # Start all component tasks
         tasks = []
         
@@ -155,14 +208,30 @@ class SOCDaemon:
         await self._shutdown_event.wait()
         
         logger.info("Shutting down daemon components...")
-        
-        # Cancel all tasks
-        for task in tasks:
-            task.cancel()
-        
-        # Wait for tasks to complete
-        await asyncio.gather(*tasks, return_exceptions=True)
-        
+
+        # Runtime-hardening gap fixed 2026-08-19: this used to call
+        # task.cancel() on every task immediately, hard-cancelling
+        # in-flight work (e.g. daemon/processor.py's _process_worker
+        # mid-item) with zero chance to finish. Each component's own run()
+        # loop already checks shutdown_event.is_set() between units of
+        # work -- draining first (asyncio.wait with a timeout, not
+        # cancelling) gives that check a real chance to fire naturally.
+        # Whatever's still running after the grace period gets
+        # force-cancelled as before, so shutdown is still bounded.
+        grace = self.config.shutdown_grace_seconds
+        logger.info(f"Draining in-flight work (up to {grace}s) before cancelling anything still running...")
+        done, pending = await asyncio.wait(tasks, timeout=grace)
+        if pending:
+            logger.warning(
+                f"{len(pending)}/{len(tasks)} daemon task(s) did not finish within the "
+                f"{grace}s shutdown grace period -- cancelling"
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        else:
+            logger.info("All daemon tasks finished within the shutdown grace period")
+
         self._running = False
 
         # Flush and shut down OTEL providers

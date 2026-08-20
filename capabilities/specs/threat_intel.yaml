@@ -1,0 +1,32 @@
+capability_id: threat_intel
+role: threat_intel
+trigger_intent: threat_intel
+plan:
+- type: recipe
+  ref: cve_traversal
+  name: which of our assets are affected by this CVE
+  question_template: 'is {cve_id} present in our environment'
+inputs:
+- name: cve_id
+  type: string
+  required: true
+synthesis: >-
+  Given the CVE's own database record (CVSS score, published date,
+  references -- from the keyless cve_search_by_id tool, called directly
+  through the recipe executor's established _call convention rather than a
+  new coverage-matrix row, same disclosed tradeoff as Hunter's powerquery
+  and Correlator's list_alerts calls this same phase) and which of our own
+  assets are affected (cve_traversal), produce an indicator profile:
+  reputation (CVSS/severity, sourced from the CVE database, stated as
+  fact), technique context if the CVE description implies one (labeled
+  interpretation), and attribution (state plainly that no threat-actor
+  attribution source exists in this integration -- never invent one).
+  Explicitly note that hash-reputation enrichment (VirusTotal/GTI) is NOT
+  available in this tenant (PURPLEMCP_VT_API_KEY not configured, confirmed
+  via mcp_tools.md) if a hash was the original ask, rather than silently
+  ignoring that part of the question.
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/threat_intel.md

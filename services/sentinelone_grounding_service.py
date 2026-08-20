@@ -43,6 +43,19 @@ UNCATALOGUED_ENUM_LOG_PATH = INTERPRETATION_DIR / "uncatalogued_enum_values.json
 
 SENTRY_INTERNAL_QUESTION_CLASS = "sentry_internal"
 
+# dv_hunt fans out to many templates in data/knowledge/sentinelone/dv_cookbook/
+# (a different directory/schema than recipes/, matched by
+# services/sentinelone_recipe_executor.py's own second-level retrieval-store
+# lookup) rather than one recipe_id per question_class like every other
+# routed row -- get_recipe_by_intent() below will never find a "dv_hunt"
+# recipe file, so it needs its own special case rather than falling through
+# to the generic "no validated recipe" refusal despite the coverage matrix
+# row itself being status: stable. The executor handles its own internal
+# "no template matched confidently" refusal (returns execution_error, which
+# the chat interception logs and falls through on) -- this gate only needs
+# to let a routed dv_hunt question reach that executor at all.
+DV_HUNT_QUESTION_CLASS = "dv_hunt"
+
 # Confirmed by direct inventory scan of the 33 tools in mcp_tools.md
 # (Milestone 7): every tool is get_/list_/search_/cve_/powerquery/
 # purple_ai/threat_intel_/timestamp-prefixed. No isolate/mitigate/
@@ -201,26 +214,29 @@ def format_grounding_line(
 ) -> str:
     """The mandatory grounding line every factual answer ends with.
 
+    Reverted 2026-08-20 (explicit user request: "no basic generic
+    citations ... always reference its source") back to including
+    `Window:`/`Results:` on the line, after a post-Phase-2 simplification
+    had dropped them to just `Source: · Client:` because repeating a count
+    the body sentence already states read as too robotic. That earlier
+    call is still worth knowing about if this ever needs revisiting again:
+    the pendulum swung terse-first, this swings it back one notch toward
+    explicit, at the user's direction -- not a regression, a reconsidered
+    tradeoff. `Source:`/`Client:` was always the load-bearing
+    anti-hallucination anchor (which system answered, which tenant);
+    `Window:`/`Results:` are the added scope/traceability detail.
+
     Label is "Client:" (not "Tenant:") to match
-    data/agent/protocol/task_execution_protocol.md section 6 and the
-    Milestone 0 regression fixture (tests/fixtures/threat_count_source.md)
-    verbatim -- both use "Client," the SOC's term for the tenant/
-    organization being monitored. Caught by Milestone 8's regression-fixture
-    run: an earlier draft of this function said "Tenant:", which would have
-    failed the fixture's exact expected_answer_shape.
+    data/agent/protocol/task_execution_protocol.md section 6 -- the SOC's
+    term for the tenant/organization being monitored.
     """
-    if result_count is not None:
-        results_part = str(result_count)
-    elif empty_classification is not None:
-        results_part = f"0 ({empty_classification.value})"
-        if empty_reason:
-            results_part += f" -- {empty_reason}"
-    else:
+    if result_count is None and empty_classification is None:
         raise ValueError("must provide result_count or empty_classification")
-    return (
-        f"Source: {source_module} · Client: {tenant} · "
-        f"Window: {window} · Results: {results_part}"
-    )
+    if result_count is not None:
+        results_label = str(result_count)
+    else:
+        results_label = f"0 ({empty_classification.value})"
+    return f"Source: {source_module} · Client: {tenant} · Window: {window} · Results: {results_label}"
 
 
 def format_grounded_answer(
@@ -236,6 +252,26 @@ def format_grounded_answer(
         source_module, tenant, window, result_count, empty_classification, empty_reason
     )
     return f"{body.rstrip()}\n\n{line}"
+
+
+def format_refusal_answer(reason: str, closest_validated_path: Optional[str]) -> str:
+    """Present a RefusalGateResult to the user. Used by the live chat
+    interception (Phase 2 wiring) when the router matched a SentinelOne
+    question_class but the gate refused execution (no stable recipe yet, or
+    an experimental one) -- states why plainly rather than pretending
+    nothing was asked, per the protocol's "no unvalidated queries" rule."""
+    body = f"I don't have a validated, live-tested retrieval for that yet. {reason}."
+    if closest_validated_path:
+        body += f" Closest documented (unvalidated) path: {closest_validated_path}."
+    return body
+
+
+def format_disambiguation_answer(options: list[str]) -> str:
+    """Present an ambiguous RouteDecision as one disambiguating question,
+    per the protocol: 'ask one disambiguating question... rather than
+    guessing.'"""
+    pretty = " or ".join(o.replace("_", " ") for o in options)
+    return f"I want to make sure I retrieve the right thing — are you asking about {pretty}? Could you clarify?"
 
 
 def validate_query_or_refuse(decision: RouteDecision) -> RefusalGateResult:
@@ -285,6 +321,16 @@ def validate_query_or_refuse(decision: RouteDecision) -> RefusalGateResult:
             reason=(
                 "the one row where Sentry's own findings store IS the "
                 "correct source -- not a SentinelOne question"
+            ),
+        )
+
+    if question_class == DV_HUNT_QUESTION_CLASS:
+        return RefusalGateResult(
+            allowed=True,
+            reason=(
+                "routed to the dv_hunt cookbook's second-level template "
+                "match; the executor itself refuses if no template matches "
+                "confidently"
             ),
         )
 

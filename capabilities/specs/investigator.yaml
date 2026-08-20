@@ -1,0 +1,35 @@
+capability_id: investigator
+role: investigator
+trigger_intent: investigator
+plan:
+- type: recipe
+  ref: threat_detail
+  name: entry-point alert (to find its storylineId)
+  question_template: 'tell me more about alert {alert_id}'
+- type: recipe
+  ref: storyline_pivot
+  name: full attack chain sharing that storyline
+  question_template: 'reconstruct the attack chain for storyline {storyline_id}'
+inputs:
+- name: alert_id
+  type: string
+  required: true
+synthesis: >-
+  Given the retrieved attack-chain alerts (each with a name, severity,
+  classification, detection time, and affected asset), produce: (1) a
+  timeline of the retrieved alerts in chronological order (EVIDENCE only --
+  never invent an alert not in the list); (2) the distinct affected hosts
+  (EVIDENCE); (3) likely MITRE ATT&CK tactics/techniques suggested by the
+  alerts' own names/descriptions (INTERPRETATION -- SentinelOne's Alert
+  entity carries no structured MITRE field in this integration, so any
+  technique mapping here is inference from naming patterns, not a
+  retrieved fact, and must be labeled as such explicitly, never presented
+  as if it were structured data). Output two clearly labeled sections:
+  EVIDENCE (timeline + hosts, verbatim from retrieved data) and ASSESSMENT
+  (MITRE interpretation + a one-paragraph narrative of how the chain likely
+  unfolded, explicitly marked as interpretation).
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/investigator.md

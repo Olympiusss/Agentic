@@ -1,0 +1,74 @@
+recipe_id: application_risk
+intent: application_risk
+inputs: []
+tool_calls:
+- tool: search_vulnerabilities
+  parameters:
+    filters: '[{"fieldId":"severity","filterType":"string_equals","value":"CRITICAL"}]'
+    first: 100
+  purpose: >-
+    one of 4 concurrent (asyncio.gather) severity-filtered samples -- see
+    HIGH/MEDIUM/LOW below. No dedicated Applications tool exists; this is
+    a DERIVED view over Vulnerability.software.name (a nested field --
+    NOT the top-level product/vendor fields, which are always constant
+    "Singularity Vulnerability Management"/"SentinelOne", naming the
+    detecting tool, not the affected application -- a real trap the live
+    probe caught).
+- tool: search_vulnerabilities
+  parameters:
+    filters: '[{"fieldId":"severity","filterType":"string_equals","value":"HIGH"}]'
+    first: 100
+  purpose: concurrent sample for HIGH severity
+- tool: search_vulnerabilities
+  parameters:
+    filters: '[{"fieldId":"severity","filterType":"string_equals","value":"MEDIUM"}]'
+    first: 100
+  purpose: concurrent sample for MEDIUM severity
+- tool: search_vulnerabilities
+  parameters:
+    filters: '[{"fieldId":"severity","filterType":"string_equals","value":"LOW"}]'
+    first: 100
+  purpose: concurrent sample for LOW severity
+- tool: search_vulnerabilities
+  parameters:
+    filters: '[{"fieldId":"softwareName","filterType":"string_equals","value":"<top app from the 400-record sample>"}]'
+    first: 1
+  purpose: >-
+    exact count-only follow-up for each of the top few applications found
+    in the sample -- confirmed live that softwareName IS a real
+    server-side filter (string_equals), giving an authoritative total_count
+    for those specific applications rather than reporting the raw sample
+    counts as if they were tenant-wide totals.
+expected_result_shape: >-
+  top applications by vulnerability count, with exact totals for the top
+  few (this run, live-confirmed -- Google Chrome and Mozilla Firefox
+  dominant by a wide margin, ~13 distinct applications total across a
+  400-record cross-section; Mozilla Firefox alone confirmed at 5,290 exact
+  total vulnerabilities via the softwareName follow-up)
+validated_edge_cases:
+- case: first_param_capped_at_100
+  observed_behavior: >-
+    confirmed live that search_vulnerabilities rejects first>100
+    ("ValueError: first must be between 1 and 100") -- a real, different
+    limit than list_inventory_items's 1000 cap. Do not assume tools share
+    a pagination ceiling.
+- case: single_severity_sample_is_badly_clustered
+  observed_behavior: >-
+    a first=100 CRITICAL-only sample came back 100% Mozilla Firefox
+    (matching what looks like one bulk same-timestamp detection batch) --
+    not representative on its own. Sampling across all 4 severities
+    concurrently and combining is what actually surfaces the real
+    application distribution (13 distinct apps, Chrome/Firefox dominant).
+- case: never_report_sample_counts_as_totals
+  observed_behavior: >-
+    the 400-record sample's raw per-app counts (e.g. "633 Chrome") are
+    sample frequencies, not real totals -- severities are sampled at
+    wildly different proportions of their true size (LOW ~11% sampled vs
+    HIGH ~0.65% sampled), so a naive "Chrome: 633" framing would mislead.
+    The recipe always follows up with an exact softwareName count for any
+    application it reports a number for.
+elicited_by: >-
+  Milestone 9 full-scope coverage audit -- Applications branch of the
+  tenant hierarchy diagram, matching the SentinelOne console screenshot's
+  Application Risks table.
+status: stable

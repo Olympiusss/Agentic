@@ -1,0 +1,27 @@
+capability_id: environment_snapshot
+role: framework
+trigger_intent: environment_snapshot
+plan:
+- type: recipe
+  ref: endpoint_count
+  name: endpoint count
+- type: recipe
+  ref: group_count
+  name: group count
+- type: recipe
+  ref: tenant_structure
+  name: tenant structure
+inputs: []
+synthesis: >-
+  none -- Milestone 0's trivial proof-of-mechanism capability has no
+  synthesis step. It exists to prove the runner executes a multi-step plan
+  end-to-end, enforces the composition-only rule, and produces a grounded
+  output composed of already-grounded recipe answers -- exactly this
+  milestone's acceptance bar, nothing more. Real synthesis (Claude
+  reasoning over collected results) starts with the Triage capability,
+  Milestone 1.
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/environment_snapshot.yaml

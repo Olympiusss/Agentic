@@ -1,0 +1,28 @@
+capability_id: threat_hunter
+role: hunter
+trigger_intent: threat_hunter
+plan:
+- type: template
+  ref: '(all 11 dv_cookbook templates, or a caller-specified subset)'
+  name: run each stable/confirmed Deep Visibility hunt template over the stated window
+inputs:
+- name: window_hours
+  type: integer
+  required: false
+- name: template_ids
+  type: array
+  required: false
+- name: confirmed
+  type: boolean
+  required: false
+synthesis: >-
+  No LLM synthesis step -- Hunter's output is the aggregated, grounded hit
+  counts per template with MITRE tags and cookbook false-positive notes
+  attached verbatim. Nothing here is inference, so nothing needs a
+  fact/interpretation split via Claude; each hit count traces directly to
+  one powerquery() call.
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/threat_hunter.md

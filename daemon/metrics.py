@@ -213,7 +213,11 @@ class MetricsServer:
     async def run(self, shutdown_event: asyncio.Event):
         """Run the health HTTP server."""
         app = web.Application()
-        app.router.add_get("/health", self._handle_health)
+        # /health kept as an alias to /health/ready for backward
+        # compatibility with anything already polling the old path.
+        app.router.add_get("/health", self._handle_health_ready)
+        app.router.add_get("/health/live", self._handle_health_live)
+        app.router.add_get("/health/ready", self._handle_health_ready)
         app.router.add_get("/status", self._handle_status)
 
         runner = web.AppRunner(app)
@@ -228,16 +232,36 @@ class MetricsServer:
         await runner.cleanup()
         logger.info("Health server stopped")
 
-    async def _handle_health(self, request: web.Request) -> web.Response:
-        """Handle health check request."""
-        health: Dict[str, Any] = {
-            "status": "healthy",
+    async def _handle_health_live(self, request: web.Request) -> web.Response:
+        """Liveness only -- is this process up at all. Deliberately never
+        checks dependencies: a slow/unreachable Postgres or Redis is a
+        READINESS problem, not proof the process itself is dead and
+        needs restarting. Always fast, always cheap."""
+        return web.json_response({
+            "status": "alive",
             "timestamp": datetime.utcnow().isoformat(),
             "uptime_seconds": (datetime.utcnow() - self._start_time).total_seconds(),
+        })
+
+    async def _handle_health_ready(self, request: web.Request) -> web.Response:
+        """Readiness -- is this process up AND actually able to do real
+        work. Runtime-hardening gap fixed 2026-08-19: this endpoint used
+        to only check whether component object references were non-None
+        (true forever after startup regardless of whether Postgres/Redis
+        were actually reachable -- pure liveness dressed up as health).
+        Now genuinely pings both, each bounded by a short timeout so a
+        slow dependency degrades readiness quickly instead of hanging
+        this endpoint. Deliberately does NOT ping SentinelOne/live SIEM
+        APIs here -- those self-gate already (see daemon/poller.py), and
+        a slow/rate-limited upstream shouldn't flap the daemon's own
+        readiness."""
+        dependencies = {
+            "postgres": await self._check_postgres(),
+            "redis": await self._check_redis(),
         }
+        dependencies_ok = all(d["ok"] for d in dependencies.values())
 
         components = {}
-
         if self.poller:
             components["poller"] = "running"
         else:
@@ -263,17 +287,66 @@ class MetricsServer:
         else:
             components["orchestrator"] = "not_initialized"
 
-        health["components"] = components
+        components_all_up = all(v == "running" for v in components.values())
+        components_any_up = any(v == "running" for v in components.values())
 
-        if all(v == "running" for v in components.values()):
-            health["status"] = "healthy"
-        elif any(v == "running" for v in components.values()):
-            health["status"] = "degraded"
+        if dependencies_ok and components_all_up:
+            status = "ready"
+        elif dependencies_ok and components_any_up:
+            status = "degraded"
         else:
-            health["status"] = "unhealthy"
+            status = "not_ready"
 
-        status_code = 200 if health["status"] != "unhealthy" else 503
+        health: Dict[str, Any] = {
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat(),
+            "uptime_seconds": (datetime.utcnow() - self._start_time).total_seconds(),
+            "dependencies": dependencies,
+            "components": components,
+        }
+
+        status_code = 200 if status in ("ready", "degraded") else 503
         return web.json_response(health, status=status_code)
+
+    async def _check_postgres(self, timeout: float = 2.0) -> Dict[str, Any]:
+        """Real connectivity check, not just "is the object constructed" --
+        runs SELECT 1 through the existing DatabaseManager connection
+        pool, off-loaded to a thread since the SQLAlchemy session is
+        synchronous, bounded by `timeout` so a hung DB can't hang this
+        endpoint."""
+        try:
+            from sqlalchemy import text
+
+            from database.connection import get_db_manager
+
+            def _ping() -> None:
+                db_manager = get_db_manager()
+                with db_manager.session_scope() as session:
+                    session.execute(text("SELECT 1"))
+
+            await asyncio.wait_for(asyncio.to_thread(_ping), timeout=timeout)
+            return {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    async def _check_redis(self, timeout: float = 2.0) -> Dict[str, Any]:
+        """Real PING against Redis, bounded by `timeout`. A fresh client
+        per call (not a shared/cached one) -- this endpoint is polled
+        infrequently enough that connection setup cost doesn't matter,
+        and a fresh connection can't itself be the thing that's stale/
+        wedged."""
+        try:
+            import redis.asyncio as aioredis
+
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            client = aioredis.from_url(redis_url)
+            try:
+                await asyncio.wait_for(client.ping(), timeout=timeout)
+            finally:
+                await client.aclose()
+            return {"ok": True}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """Handle detailed status request."""

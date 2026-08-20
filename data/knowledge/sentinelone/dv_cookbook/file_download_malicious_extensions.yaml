@@ -1,0 +1,33 @@
+template_id: file_download_malicious_extensions
+hunt_pattern: exfiltration
+mitre:
+- tactic: Command and Control
+  technique_id: T1105
+  technique_name: Ingress Tool Transfer
+query_source:
+  natural_language_prompt: Show me file download events where the file name ends in .zip, .iso, or .html
+  resulting_query: event.category = "file" and (file.path contains ".zip" or file.path contains ".iso"
+    or file.path contains ".html") | columns event.time, endpoint.name, file.path | limit 5
+  purple_ai_status: purple_ai() failed systemically this session (confirmed via diagnostic probe, not
+    a phrasing issue -- see field_dictionary.yaml). This query is hand-composed from confirmed field_dictionary.yaml
+    fields as a fallback, per explicit user direction, and has NOT been generated or verified by purple_ai()
+    the documented way.
+  confidence_note: 'Adapted from a user-supplied query example (SentinelOne queries and Prompts.pdf, #7)
+    that targeted a dedicated "file download" event.type and tgt.file.name with ends_with -- neither
+    is confirmed on this tenant (only event.category="file" and file.path are, per field_dictionary.yaml),
+    so this approximates with a file-category + contains match instead of a download-specific event
+    type. Tagged Command and Control / Ingress Tool Transfer rather than the DV-cookbook''s existing
+    Exfiltration bucket''s literal MITRE tag, since this hunts payloads arriving, not data leaving --
+    grouped under the same hunt_pattern as exfiltration_dns_baseline (both are the DV-cookbook''s
+    C2/exfil-adjacent bucket) per that template''s own precedent of tagging loosely across the two
+    related tactics.'
+default_window: PT24H
+result_cap: 5
+false_positives_observed: []
+triage_status: not independently triaged this session -- ran_without_error and result_sample below are
+  the only evidence checked
+status: experimental
+validation_result:
+  ran_without_error: true
+  error: null
+  result_sample: ''

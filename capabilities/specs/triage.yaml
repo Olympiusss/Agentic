@@ -1,0 +1,41 @@
+capability_id: triage
+role: triage
+trigger_intent: triage
+plan:
+- type: recipe
+  ref: threat_detail
+  name: alert detail (severity, verdict, classification, response actions, analyst attribution)
+  question_template: 'tell me more about alert {alert_id}'
+- type: recipe
+  ref: storyline_pivot
+  name: blast radius via the storyline this alert belongs to (conditional -- only run if the alert carries a storylineId)
+  question_template: 'reconstruct the attack chain for storyline {storyline_id}'
+inputs:
+- name: alert_id
+  type: string
+  required: true
+synthesis: >-
+  Given the retrieved alert detail (severity, status, analyst verdict,
+  classification, any response/mitigation actions already taken, who took
+  them) and, if available, the storyline blast-radius count, produce: (1) a
+  verdict of true positive, false positive, or uncertain -- if the retrieved
+  evidence already contains a human analyst's recorded verdict
+  (analystVerdict/status history), treat that as the strongest single
+  signal and do not silently override it without saying so explicitly; (2)
+  a severity confirmation -- restate the retrieved severity, and flag
+  explicitly (never silently) if anything else in the evidence conflicts
+  with it; (3) a blast-radius estimate from the storyline alert count when
+  available, otherwise state plainly that blast radius could not be
+  estimated (no storyline on this alert), never guess a number; (4) a
+  confidence score (0-100) reflecting how much real evidence backs the
+  verdict -- low if evidence is thin, high only when multiple signals
+  agree. Output two clearly labeled sections: EVIDENCE (only what was
+  retrieved, verbatim facts) and ASSESSMENT (the judgement built from it,
+  explicitly marked as interpretation). Never state a judgement in the
+  EVIDENCE section, and never state a retrieved fact as if it were your own
+  inference.
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: true
+status: stable
+regression_fixture: tests/capability_fixtures/triage.md

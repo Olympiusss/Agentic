@@ -1,0 +1,31 @@
+capability_id: brief
+role: reporter
+trigger_intent: brief
+plan:
+- type: recipe
+  ref: incident_status
+  name: severity/status movement over the trailing window
+- type: recipe
+  ref: endpoint_count
+  name: current endpoint count (new-host detection is a diff against the prior brief, not computed here yet)
+- type: recipe
+  ref: agent_health
+  name: agent-health changes (offline/infected endpoints)
+inputs:
+- name: window_hours
+  type: integer
+  required: false
+synthesis: >-
+  Given the retrieved incident-status breakdown, endpoint count, and
+  agent-health snapshot, synthesize a brief: notable detections (from
+  incident_status), any agent-health concerns (from agent_health), and a
+  one-paragraph summary suitable for starting a shift. State plainly which
+  facts are retrieved (with their own grounding lines preserved) versus any
+  trend commentary, which is interpretation. This is scheduled reporting,
+  an intelligence output -- it recommends nothing be actioned and takes no
+  action itself, per the brief's own explicit distinction from Objective 2.
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/brief.md

@@ -165,9 +165,31 @@ class Orchestrator:
                 self._sync_enabled_from_db()
                 await self._sleep(shutdown_event, 5)
 
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            if shutdown_event.is_set():
+                # Genuine daemon shutdown -- drain first (runtime-
+                # hardening gap fixed 2026-08-19: this used to
+                # task.cancel() immediately here too, same as
+                # daemon/main.py/daemon/processor.py's identical bug).
+                # The intake/supervision/review loops above already
+                # check shutdown_event.is_set() between iterations, so
+                # this just gives that check a real chance to fire.
+                grace = self.config.shutdown_grace_seconds
+                done, pending = await asyncio.wait(tasks, timeout=grace)
+                if pending:
+                    logger.warning(
+                        f"{len(pending)}/{len(tasks)} orchestrator loop(s) did not finish within the "
+                        f"{grace}s shutdown grace period -- cancelling"
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+            else:
+                # Admin toggled the orchestrator off via UI/API, not a
+                # process shutdown -- cancel promptly as before, no
+                # reason to make a toggle-off wait.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
             if not shutdown_event.is_set():
                 logger.info(

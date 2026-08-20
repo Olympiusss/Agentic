@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sentry.ai/schemas/capability.schema.json",
+  "title": "Sentry Agentic Capability",
+  "description": "Phase 3 (Sentry_AgenticSOC_Capabilities_Brief_for_Antigravity.md, Milestone 0). A capability composes validated recipes and stable Deep Visibility templates into a multi-step, grounded workflow -- it never calls a raw MCP tool directly. That composition-only rule is enforced by capabilities/runner.py, not just documented here.",
+  "type": "object",
+  "required": ["capability_id", "role", "trigger_intent", "plan", "synthesis", "output_contract", "status"],
+  "properties": {
+    "capability_id": {
+      "type": "string",
+      "description": "Stable identifier, e.g. 'environment_snapshot', 'triage'."
+    },
+    "role": {
+      "type": "string",
+      "enum": ["framework", "triage", "investigator", "hunter", "correlator", "threat_intel", "reporter"],
+      "description": "Which specialist role (brief section 3) this capability belongs to. 'framework' is reserved for Milestone 0's own trivial proof-of-mechanism capability -- not one of the six specialist roles."
+    },
+    "trigger_intent": {
+      "type": "string",
+      "description": "The coverage-matrix question_class (or a new capability-level intent) that invokes this capability."
+    },
+    "plan": {
+      "type": "array",
+      "description": "Ordered list of recipe/template references this capability composes. Never a raw tool -- the runner fails closed on any 'type': 'tool' entry (or any ref not found in the validated recipe/template libraries), per the brief's central composition rule.",
+      "items": {
+        "type": "object",
+        "required": ["type", "ref"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["recipe", "template"],
+            "description": "'recipe' references data/knowledge/sentinelone/recipes/<ref>.yaml by recipe_id/intent. 'template' references data/knowledge/sentinelone/dv_cookbook/<ref>.yaml by chunk_key."
+          },
+          "ref": {
+            "type": "string",
+            "description": "The recipe_id/intent or dv_hunt template chunk_key being composed."
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable label for this step, used in output/logging."
+          },
+          "question_template": {
+            "type": "string",
+            "description": "A natural-language question template (Python str.format placeholders against `inputs`) fed to the existing recipe executor, e.g. 'tell me more about alert {alert_id}'. Recipes already extract entities from natural language -- this reuses that mechanism rather than inventing a second calling convention. Omit for no-input recipes."
+          }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Named parameters this capability accepts, resolved against the memory cache or the caller.",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string"},
+          "required": {"type": "boolean", "default": true}
+        }
+      }
+    },
+    "synthesis": {
+      "type": "string",
+      "description": "Instructions for the Claude reasoning step over the collected, grounded recipe results. Model-agnostic per the brief's own constraint -- describes what to reason about, not a specific engine's prompt syntax. May be empty/'none' for Milestone 0's trivial framework-proof capability, which has no synthesis step yet."
+    },
+    "output_contract": {
+      "type": "object",
+      "required": ["separates_fact_from_interpretation"],
+      "properties": {
+        "separates_fact_from_interpretation": {
+          "type": "boolean",
+          "description": "Must be true for every non-trivial capability -- the output must label interpretation as interpretation, never blend it with retrieved fact."
+        },
+        "includes_confidence_score": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["experimental", "stable"],
+      "description": "Only 'stable' capabilities run without analyst confirmation, matching the recipe schema's own status contract."
+    },
+    "regression_fixture": {
+      "type": "string",
+      "description": "Path to a fixture in tests/capability_fixtures/ this capability must pass."
+    }
+  }
+}

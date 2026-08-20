@@ -1,0 +1,39 @@
+recipe_id: tenant_structure
+intent: tenant_structure
+inputs: []
+tool_calls:
+- tool: list_inventory_items
+  parameters:
+    limit: 1000
+    surface: ENDPOINT
+    fetch_fields: ALL
+  purpose: >-
+    no dedicated Account/Site tool exists in this MCP server (confirmed
+    Milestone 1/9) -- Accounts and Sites, like Groups, are only recoverable
+    as the s1AccountName/s1SiteName fields carried on every InventoryItem
+    endpoint record. Extract distinct values for both in the same pass.
+    Deliberately dynamic (not hardcoded to today's 1 account / 1 site) --
+    this platform is multi-tenant long-term, onboarding one client first;
+    a future tenant with a genuinely different shape is handled by the
+    same code path unchanged.
+expected_result_shape: >-
+  account and site names/counts (this run, live-confirmed -- 1 account "MU
+  ||EXN ROA - Upfront - CyberVergent Ltd", 1 site "Cybervergent")
+validated_edge_cases:
+- case: paginated
+  observed_behavior: >-
+    same pagination behavior as endpoint_count/group_count -- pagination
+    field is always {}, so len(data) at limit=1000 is treated as
+    exhaustive here because it returned well under 1000, not because a
+    total field confirmed it.
+- case: kept_separate_from_group_count
+  observed_behavior: >-
+    group_count already exists as its own stable, router-calibrated row --
+    this recipe deliberately does not merge into or replace it, to avoid
+    re-touching a row that already required real embedding-separation
+    tuning this session (see group_count's own elicited_by note).
+elicited_by: >-
+  Milestone 9 full-scope coverage audit -- Accounts/Sites branches of the
+  tenant hierarchy diagram, never previously formalized as first-class
+  ontology entities.
+status: stable

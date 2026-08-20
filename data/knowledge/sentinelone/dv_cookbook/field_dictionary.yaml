@@ -19,6 +19,48 @@ categories:
   field_causing_connection_error: null
   connection_error: null
   status: experimental
+  process_user_field:
+    note: 'Confirmed live 2026-08-18 (alert-notification report template build) using
+      the fuller src.process.* field-path convention capabilities/artifact_analysis.py
+      already uses (a different alias style than this category''s process.name/
+      process.cmdline entries above -- both conventions appear to resolve against
+      the same underlying schema). Tested 7 candidate field names on two real
+      storylines: a Linux endpoint (ip-172-31-1-35, /usr/bin/dash) where every
+      candidate came back null, and a Windows endpoint (CYV-CA-LPT-079) where
+      src.process.user populated real values (AzureAD\ChineduMbaekwe). Treat as
+      Windows-only in practice -- degrade to "not available" rather than fabricate
+      when null, do not treat a null on a Linux/macOS endpoint as a query bug.'
+    field: src.process.user
+    also_confirmed_but_redundant: src.process.parent.user
+    confirmed_null_on:
+    - src.process.username
+    - src.process.owner
+    - src.process.user.name
+    - endpoint.user
+    - user.name
+    - user.identifier
+    confirmed_populated_on: Windows endpoints (tested)
+    confirmed_null_on_os: Linux (tested)
+  parent_process_field:
+    note: 'Wired into capabilities/artifact_analysis.py''s _PROCESS_QUERY
+      2026-08-18 (investigative-report template''s "Originating Process"
+      field) as src.process.parent.image.path, mirroring the confirmed
+      src.process.image.path naming convention. Initial probe attempts
+      against two historical storylines (via a standalone script, wider
+      time windows) timed out at the 30s PowerQuery ceiling -- but a real
+      end-to-end run of the rewritten synergy pipeline the same day
+      (capabilities/synergy.py''s notify_new_alert_immediate +
+      run_synergy_pipeline, called directly against real finding
+      s1-019fd5c1-c62f-7251-a172-8d19e32106ce / storyline
+      c5355307-0aa5-fad0-0424-cf1bb8f1d06a, ip-172-31-1-35, Linux) DID
+      return a real, populated value: "Originating Process:
+      /usr/sbin/cron" for a dash process creation. Confirmed populated on
+      Linux; not yet independently confirmed on Windows. Still degrades to
+      "not available" when null (e.g. no parent recorded), never
+      fabricated.'
+    field: src.process.parent.image.path
+    confirmed_populated_on: "Linux (tested, real end-to-end run 2026-08-18)"
+    status: experimental_confirmed_live
 - category: network
   purple_ai_status: purple_ai() failed systemically this session -- confirmed via diagnostic probe using
     the tool's own documented example question; not a phrasing issue

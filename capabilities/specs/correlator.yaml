@@ -1,0 +1,28 @@
+capability_id: correlator
+role: correlator
+trigger_intent: correlator
+plan:
+- type: recipe
+  ref: threat_count
+  name: '(not composed directly -- Correlator fetches a bounded recent-alert sample via the same search_alerts/list_alerts tool threat_count already uses, through the recipe executor''s own _call helper, same pattern as Hunter''s powerquery calls)'
+inputs:
+- name: sample_size
+  type: integer
+  required: false
+synthesis: >-
+  Given a bounded sample of recent alerts (each with name, severity,
+  classification, asset, detectedAt, storylineId), cluster them by shared
+  signal: same storylineId (already a known chain), same asset/host (
+  repeated activity on one machine), same classification across MULTIPLE
+  distinct hosts (a potential campaign, not just one machine's noise).
+  Present the clusters themselves as EVIDENCE (verbatim grouping of
+  retrieved alerts). Then, ONLY if a cluster spans multiple hosts with the
+  same classification/technique pattern, offer a campaign hypothesis as
+  ASSESSMENT, explicitly labeled as interpretation -- never state a
+  hypothesis as if it were a retrieved fact, and never invent a campaign
+  from a single-host cluster (that is just one host's own alert history).
+output_contract:
+  separates_fact_from_interpretation: true
+  includes_confidence_score: false
+status: stable
+regression_fixture: tests/capability_fixtures/correlator.md

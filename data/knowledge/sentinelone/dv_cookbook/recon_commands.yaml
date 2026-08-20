@@ -1,0 +1,34 @@
+template_id: recon_commands
+hunt_pattern: discovery
+mitre:
+- tactic: Discovery
+  technique_id: T1033
+  technique_name: System Owner/User Discovery
+- tactic: Discovery
+  technique_id: T1018
+  technique_name: Remote System Discovery
+query_source:
+  natural_language_prompt: Show me executions of whoami, nltest, net, dsquery, quser, or hostname
+  resulting_query: event.category = "process" and (process.name contains "whoami" or process.name contains
+    "nltest" or process.name contains "net.exe" or process.name contains "dsquery" or process.name contains
+    "quser" or process.name contains "hostname") | columns event.time, endpoint.name, process.name, process.cmdline
+    | limit 5
+  purple_ai_status: purple_ai() failed systemically this session (confirmed via diagnostic probe, not
+    a phrasing issue -- see field_dictionary.yaml). This query is hand-composed from confirmed field_dictionary.yaml
+    fields as a fallback, per explicit user direction, and has NOT been generated or verified by purple_ai()
+    the documented way.
+  confidence_note: 'Adapted from a user-supplied query example (SentinelOne queries and Prompts.pdf, #8),
+    dropped net1.exe (a legacy alias of net.exe, redundant with the net.exe match) to keep the list
+    to confirmed-necessary terms. process.name/process.cmdline are confirmed fields; these are common
+    admin tools too, so expect real false positives from legitimate IT/helpdesk activity -- this is a
+    broad recon-command sweep, not a refined detector.'
+default_window: PT24H
+result_cap: 5
+false_positives_observed: []
+triage_status: not independently triaged this session -- ran_without_error and result_sample below are
+  the only evidence checked
+status: experimental
+validation_result:
+  ran_without_error: true
+  error: null
+  result_sample: ''

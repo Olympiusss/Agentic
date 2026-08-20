@@ -36,8 +36,45 @@ None were independently triaged for true/false-positive rate this session (`tria
 
 `../recipes/storyline_pivot.yaml` now has a second stage sweeping Deep Visibility. Three candidate correlation fields were tested live, isolated per connection: `storylineId` and `storyline.id` both ran without error but returned no real match; **`src.process.storyline.id` was confirmed to return real data** and is the field now used in the recipe. An endpoint+time-window fallback (using only confirmed fields) was also tested and works, in case the direct field ever stops matching. Caught and fixed a real bug during development: the first version's matching logic treated an empty/blank result as "the field worked" (a blank string vacuously satisfies "doesn't contain 'Match Count: 0'"), which picked the wrong candidate field before the fix.
 
+## Post-Phase-2: 5 new templates + 1 extended, from real user-supplied query examples
+
+Purple AI's outage is now confirmed permanent (consistent AuthZ failure across
+Milestones 5-8 and again months later) — the practical decision was made to
+stop waiting for it and build the hand-composed path out properly rather
+than leave `dv_hunt` permanently refused. A user-supplied document of 10
+real SentinelOne query/prompt pairs (`SentinelOne queries and Prompts.pdf`)
+was used to extend this cookbook, each new query live-probed in its own
+isolated connection (same crash-safety discipline as the original 6) before
+being written down:
+
+| Template | Hunt pattern | MITRE | Adapted from PDF # |
+|---|---|---|---|
+| `ransomware_file_encryption_extensions` | impact (new hunt_pattern value) | T1486 | #2 |
+| `file_download_malicious_extensions` | exfiltration (C2/exfil bucket) | T1105 | #7 (the exact query from the screenshot that made Purple AI thrash) |
+| `recon_commands` | discovery (new hunt_pattern value) | T1033, T1018 | #8 |
+| `defense_evasion_security_tooling` | defense_evasion (new hunt_pattern value) | T1562.001 | #10 (narrowed — see file) |
+| `encoded_command_execution` | living_off_the_land | T1027, T1059.001 | #3 |
+| `credential_access_lsass_reference` (extended, not new) | credential_access | T1003.001 | #9 (added procdump/mimikatz by name) |
+
+`data/schemas/dv_template.schema.json`'s `hunt_pattern` enum was extended
+with `impact`/`discovery`/`defense_evasion` — the original six didn't cover
+these real MITRE tactics, and mis-tagging them into an ill-fitting bucket
+would have been worse than growing the enum.
+
+**Deliberately not built**: PDF examples #4, #5 (DLL sideloading via
+`vcruntime140.dll`, module-load events) and the parent/signed-status
+refinement in #6 (document/browser-spawned LOLBin with an unsigned parent).
+None of the fields those need — a module-load event category, a parent-process
+name/path field, a code-signing-status field — are confirmed anywhere in
+`field_dictionary.yaml` or elsewhere in this cookbook. Building them would
+mean guessing field names against a live tenant connection that a bad field
+name can close outright (confirmed risk, Phase 1) — same standing rule as
+`network`/`login` below: don't guess, re-probe when there's a real reason to
+extend into that territory.
+
 ## What's still open
 
-- Re-run both scripts once `purple_ai()` is confirmed working again, to get the documented natural-language-generated queries and promote what validates to `stable`.
+- Re-run all scripts (original + new) once `purple_ai()` is confirmed working again, to get the documented natural-language-generated queries and promote what validates to `stable`. Given the outage's now months-long persistence, don't block on this — see `services/sentinelone_recipe_executor.py`'s `dv_hunt` executor, which runs these live today with an explicit "not Purple-AI-verified" caveat on every answer instead of waiting indefinitely.
 - `network` and `login` categories remain unconfirmed for lack of data in the observed window — re-probe once traffic/logins occur in a future window, don't guess field names now.
-- No independent false-positive triage was performed on any hunt template.
+- Module-load events (needed for DLL sideloading/T1574.002) are entirely unprobed — a real gap, not a "confirmed absent" — worth a dedicated, isolated probing pass if that hunt pattern becomes a priority.
+- No independent false-positive triage was performed on any hunt template, original or new.

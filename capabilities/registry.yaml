@@ -1,0 +1,107 @@
+# Phase 3 capability registry (Sentry_AgenticSOC_Capabilities_Brief_for_Antigravity.md).
+# One entry per capability; specs live in capabilities/specs/<capability_id>.yaml.
+# Status here must match the spec file's own `status` field -- the runner
+# reads specs directly, this file is the human-facing index.
+status: stable
+note: >-
+  All 9 milestones complete, live-verified against the real tenant,
+  including tests/capability_harness.py (Milestone 8's quality report --
+  7/7 pass: grounded, traceable, composition-only for every non-framework
+  capability). Capability IDs are aligned to services/soc_agents.py's
+  existing AGENT_CONFIGS keys (threat_hunter, not hunter) -- those agents
+  currently use unrestricted native tool-calling; wiring chat's agent
+  selection to dispatch through these grounded capabilities instead is a
+  flagged, not-yet-done follow-up, not part of this brief's own acceptance
+  criteria. The scheduler (capabilities/schedule.py) is standalone --
+  not yet wired into daemon/scheduler.py's own task loop, a separate,
+  flagged integration task.
+capabilities:
+- capability_id: environment_snapshot
+  role: framework
+  status: stable
+  note: >-
+    Milestone 0's own trivial proof-of-mechanism capability, not one of the
+    six specialist roles. Composes three no-input recipes (endpoint_count,
+    group_count, tenant_structure) to prove the runner executes a plan
+    end-to-end, enforces composition-only (recipe/template, never raw
+    tool), and produces a grounded output -- the exact acceptance bar
+    Milestone 0 sets.
+- capability_id: triage
+  role: triage
+  status: stable
+  note: >-
+    Milestone 1. Composes threat_detail (severity/verdict/classification/
+    response-actions/analyst-attribution) plus storyline_pivot (blast
+    radius) when the alert carries a storylineId. Synthesis is bespoke
+    Python (capabilities/triage.py), not the Milestone 0 static-plan
+    runner, since the storyline step is conditional on threat_detail's own
+    result. Hash-reputation enrichment (mentioned in the brief) is not
+    composed -- VirusTotal/GTI requires PURPLEMCP_VT_API_KEY, confirmed not
+    configured in this tenant (mcp_tools.md), so no validated recipe exists
+    for it yet.
+- capability_id: investigator
+  role: investigator
+  status: stable
+  note: >-
+    Milestone 2. Composes threat_detail + storyline_pivot to build a
+    chronological timeline and affected-host list. MITRE mapping is
+    Claude's inference from alert naming patterns, explicitly labeled as
+    interpretation -- SentinelOne's Alert entity has no structured MITRE
+    field in this integration (confirmed Milestone 9's full tool scan).
+    Live-verified.
+- capability_id: threat_hunter
+  role: hunter
+  status: stable
+  note: >-
+    Milestone 3. Real constraint found: all 11 dv_cookbook templates are
+    status=experimental, none stable. Enforces the brief's own guardrail
+    literally -- an unconfirmed call refuses to execute anything and names
+    the experimental templates it would run; confirmed=True runs them via
+    the same powerquery mechanism dv_hunt already uses, aggregating
+    match_count (capped at each template's own result_cap) with MITRE tags
+    and false_positives_observed passed through verbatim. Live-verified.
+- capability_id: correlator
+  role: correlator
+  status: stable
+  note: >-
+    Milestone 4. Fetches a bounded recent-alert sample (list_alerts) and
+    clusters by shared storylineId, shared host, or shared classification
+    across 2+ distinct hosts. A campaign hypothesis is only ever raised for
+    genuine multi-host clusters, explicitly labeled as interpretation --
+    single-host repetition is never presented as a campaign. Live-verified
+    against the real tenant (found real overlapping RANSOMWARE/MALWARE/
+    MANUAL clusters across multiple hosts).
+- capability_id: threat_intel
+  role: threat_intel
+  status: stable
+  note: >-
+    Milestone 5. Composes cve_search_by_id (keyless CVE database) +
+    cve_traversal (asset exposure). Real shape trap found: cve_search_by_id
+    returns a full CVE Record Format 5.2 document, not a flat
+    {description, cvss} shape -- see _extract_cve_facts's defensive
+    parsing. Hash-reputation (VirusTotal/GTI) is explicitly NOT composed --
+    PURPLEMCP_VT_API_KEY confirmed not configured. Live-verified.
+- capability_id: reporter
+  role: reporter
+  status: stable
+  note: >-
+    Milestone 6. Assembles other capabilities' already-grounded outputs
+    into one report verbatim (no re-summarization, no new retrieval).
+    Drives session export (capabilities/session_export.py) into Markdown,
+    JSON, PDF (reportlab, already a dependency), and DOCX (python-docx,
+    newly added -- was not previously installed). Live-verified: exported
+    a real Triage result to all 4 formats successfully.
+- capability_id: brief
+  role: reporter
+  status: stable
+  note: >-
+    Milestone 7. Composes incident_status + endpoint_count + agent_health
+    into one grounded 24h brief. Extended (explicit user request,
+    2026-08-03) with capabilities/notifier.py (Telegram/email, gracefully
+    no-ops when not configured) for event-driven "new threat" alerts --
+    deliberately reporting-only, the same category as this brief, not
+    Objective 2 action. capabilities/schedule.py provides a real,
+    explicitly-opt-in scheduler (requires an owner + explicit start()) per
+    the brief's own guardrail ("confirm the owner, format, and delivery
+    channel before enabling it") -- standalone, not yet wired into
+    daemon/scheduler.py's own task loop. Live-verified.

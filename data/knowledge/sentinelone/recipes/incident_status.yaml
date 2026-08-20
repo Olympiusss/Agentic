@@ -1,0 +1,40 @@
+recipe_id: incident_status
+intent: incident_status
+inputs: []
+tool_calls:
+- tool: search_alerts
+  parameters:
+    filters: '[{"fieldId":"status","filterType":"string_equals","value":"NEW"}]'
+    first: 1
+  purpose: >-
+    count-only query per status value (this tool's own documented "how
+    many" pattern) -- "Incidents" is confirmed (Milestone 9 live probe of
+    get_alert_history) to be this tenant's console label for Alert.status,
+    not a separate entity. Repeated once per status value (NEW, IN_PROGRESS,
+    RESOLVED), same technique as the vulnerability severity breakdown in
+    environment_map.yaml.
+- tool: search_alerts
+  parameters:
+    filters: '[{"fieldId":"status","filterType":"string_equals","value":"IN_PROGRESS"}]'
+    first: 1
+  purpose: count-only query for IN_PROGRESS status
+- tool: search_alerts
+  parameters:
+    filters: '[{"fieldId":"status","filterType":"string_equals","value":"RESOLVED"}]'
+    first: 1
+  purpose: count-only query for RESOLVED status
+expected_result_shape: >-
+  per-status counts (this run, live-confirmed -- NEW 260, IN_PROGRESS 3,
+  RESOLVED 129)
+validated_edge_cases:
+- case: status_is_server_filterable
+  observed_behavior: >-
+    confirmed live (Milestone 9) that status IS accepted as a
+    string_equals filter on search_alerts, unlike agent.networkStatus on
+    InventoryItem which is readable but not server-filterable -- these are
+    different tools/entities with different filter dialects, don't assume
+    one's limitation applies to the other.
+elicited_by: >-
+  Milestone 9 full-scope coverage audit -- "Incidents" branch of the tenant
+  hierarchy diagram.
+status: stable

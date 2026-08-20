@@ -1,0 +1,36 @@
+recipe_id: group_count
+intent: group_count
+inputs: []
+tool_calls:
+- tool: list_inventory_items
+  parameters:
+    limit: 1000
+    surface: ENDPOINT
+    fetch_fields: ALL
+  purpose: >-
+    no dedicated account/site/group tool exists in this MCP server
+    (confirmed Milestone 1) -- groups are only recoverable as the
+    s1GroupName field carried on every InventoryItem endpoint record.
+    Fetch the maximum page size and extract the set of distinct
+    s1GroupName values. If the returned page is exactly at the limit, more
+    endpoints (and therefore possibly more groups) may exist; report as a
+    lower bound in that case, never as a confirmed total.
+expected_result_shape: >-
+  integer count of distinct groups plus their names (this run,
+  live-confirmed -- 3 groups: Product Engineer, Brand and Marketing, Admin)
+validated_edge_cases:
+- case: paginated
+  observed_behavior: >-
+    same pagination behavior as endpoint_count -- pagination field is
+    always {}, so len(data) at limit=1000 is treated as exhaustive here
+    because it returned well under 1000, not because a total field
+    confirmed it.
+- case: endpoint_with_no_group
+  observed_behavior: >-
+    s1GroupName is skipped (not counted as a group) when absent/empty on a
+    given record, rather than counted as a spurious "None" group.
+elicited_by: >-
+  real user question during production use, 2026-07-30: "how many groups
+  are there in my environment?" was misrouted to endpoint_count -- a
+  confidently wrong, fully-grounded answer.
+status: stable

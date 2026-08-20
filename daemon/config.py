@@ -13,6 +13,17 @@ class PollingConfig:
     """Configuration for data source polling intervals."""
     splunk_interval: int = 300  # 5 minutes
     crowdstrike_interval: int = 60  # 1 minute
+    # 20s, not 120s (explicit user request, 2026-08-05: every new alert must
+    # be notified immediately and get a full investigative report within AT
+    # MOST 3 minutes of it firing on SentinelOne). At 120s, a worst-case
+    # alert sits undetected for up to 2 of the 3 minutes before the daemon
+    # even sees it -- the SLA would already be blown before analysis starts.
+    # 20s keeps worst-case detection lag to a fraction of the budget.
+    sentinelone_interval: int = 20
+    # Rolling lookback window for the SentinelOne poller (explicit user
+    # request 2026-08-19, replacing cursor-based incremental polling --
+    # see daemon/poller.py::_poll_sentinelone's docstring for why).
+    sentinelone_lookback_hours: int = 3
     generic_interval: int = 120  # 2 minutes for other sources
     webhook_enabled: bool = True
     webhook_port: int = 8081
@@ -26,6 +37,12 @@ class ProcessingConfig:
     batch_size: int = 10
     max_concurrent_tasks: int = 5
     triage_timeout: int = 60  # seconds
+    # Same setting as DaemonConfig.shutdown_grace_seconds (shared env var,
+    # wired in from_env() below) -- FindingProcessor.run() has its OWN
+    # nested worker-cancellation logic independent of daemon/main.py's
+    # outer task list, so it needs its own copy of this value to drain
+    # in-flight items gracefully rather than hard-cancelling them.
+    shutdown_grace_seconds: int = 30
 
 
 @dataclass
@@ -58,11 +75,25 @@ class SchedulerConfig:
     """Configuration for scheduled tasks."""
     threat_hunt_enabled: bool = True
     threat_hunt_interval: int = 86400  # Daily (24 hours)
+    themis_sweep_enabled: bool = True
+    themis_sweep_interval: int = 7200  # Every 2 hours
+    argus_sweep_enabled: bool = True
+    argus_sweep_interval: int = 7200  # Every 2 hours
     report_generation_enabled: bool = True
     report_interval: int = 604800  # Weekly (7 days)
     cleanup_enabled: bool = True
     cleanup_interval: int = 86400  # Daily
     cleanup_retention_days: int = 90
+    # Resident 24h brief (Hermes/reporter, capabilities/brief.py), Phase 3
+    # Milestone 7 -- was fully built 2026-08-03 but never wired into this
+    # scheduler (its own module docstring flagged this as a real, open
+    # follow-up, not forgotten). Defaults OFF and requires brief_owner to be
+    # set: the capability's own guardrail is "confirm the owner, format, and
+    # delivery channel before enabling it" -- wiring it in without those
+    # confirmed would violate that on behalf of whoever deploys this.
+    brief_enabled: bool = False
+    brief_interval_hours: int = 24
+    brief_owner: str = ""
 
 
 @dataclass
@@ -90,6 +121,11 @@ class OrchestratorConfig:
     auto_assign_severities: List[str] = field(default_factory=lambda: ["critical", "high"])
     dry_run: bool = False
     dedup_window_minutes: int = 30
+    # Same shared setting as ProcessingConfig.shutdown_grace_seconds --
+    # only applied on a genuine daemon shutdown (shutdown_event.is_set()),
+    # not when an admin toggles the orchestrator off via UI/API, which
+    # should still cancel promptly.
+    shutdown_grace_seconds: int = 30
     agent_loop_delay: int = 2
     context_max_chars: int = 10000
     plan_model: str = "claude-sonnet-4-5-20250929"
@@ -146,25 +182,37 @@ class DaemonConfig:
     
     # Database
     database_url: Optional[str] = None
-    
+
     # Logging
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    
+
+    # Runtime-hardening gap fixed 2026-08-19: shutdown used to call
+    # task.cancel() on every component immediately when the shutdown
+    # event fired, hard-cancelling in-flight work (e.g. a worker mid-
+    # _process_item) with no chance to finish. This is how long
+    # SOCDaemon.run() now waits for tasks to finish naturally before
+    # force-cancelling whatever's still pending.
+    shutdown_grace_seconds: int = 30
+
     @classmethod
     def from_env(cls) -> "DaemonConfig":
         """Load configuration from environment variables."""
         config = cls()
-        
+
         # Database
         config.database_url = os.getenv("DATABASE_URL")
-        
+
         # Logging
         config.log_level = os.getenv("DAEMON_LOG_LEVEL", "INFO")
+
+        config.shutdown_grace_seconds = int(os.getenv("DAEMON_SHUTDOWN_GRACE_SECONDS", "30"))
         
         # Polling intervals
         config.polling.splunk_interval = int(os.getenv("DAEMON_SPLUNK_POLL_INTERVAL", "300"))
         config.polling.crowdstrike_interval = int(os.getenv("DAEMON_CROWDSTRIKE_POLL_INTERVAL", "60"))
+        config.polling.sentinelone_interval = int(os.getenv("DAEMON_SENTINELONE_POLL_INTERVAL", "20"))
+        config.polling.sentinelone_lookback_hours = int(os.getenv("DAEMON_SENTINELONE_LOOKBACK_HOURS", "3"))
         config.polling.webhook_enabled = os.getenv("DAEMON_WEBHOOK_ENABLED", "true").lower() == "true"
         config.polling.webhook_port = int(os.getenv("DAEMON_WEBHOOK_PORT", "8081"))
         
@@ -172,6 +220,8 @@ class DaemonConfig:
         config.processing.auto_triage_enabled = os.getenv("DAEMON_AUTO_TRIAGE", "true").lower() == "true"
         config.processing.auto_enrich_enabled = os.getenv("DAEMON_AUTO_ENRICH", "true").lower() == "true"
         config.processing.batch_size = int(os.getenv("DAEMON_BATCH_SIZE", "10"))
+        config.processing.shutdown_grace_seconds = config.shutdown_grace_seconds
+        config.orchestrator.shutdown_grace_seconds = config.shutdown_grace_seconds
         
         # Response
         config.response.auto_response_enabled = os.getenv("DAEMON_AUTO_RESPONSE", "true").lower() == "true"
@@ -191,7 +241,14 @@ class DaemonConfig:
         # Scheduler
         config.scheduler.threat_hunt_enabled = os.getenv("DAEMON_THREAT_HUNT_ENABLED", "true").lower() == "true"
         config.scheduler.threat_hunt_interval = int(os.getenv("DAEMON_THREAT_HUNT_INTERVAL", "86400"))
+        config.scheduler.themis_sweep_enabled = os.getenv("DAEMON_THEMIS_SWEEP_ENABLED", "true").lower() == "true"
+        config.scheduler.themis_sweep_interval = int(os.getenv("DAEMON_THEMIS_SWEEP_INTERVAL", "7200"))
+        config.scheduler.argus_sweep_enabled = os.getenv("DAEMON_ARGUS_SWEEP_ENABLED", "true").lower() == "true"
+        config.scheduler.argus_sweep_interval = int(os.getenv("DAEMON_ARGUS_SWEEP_INTERVAL", "7200"))
         config.scheduler.cleanup_retention_days = int(os.getenv("DAEMON_CLEANUP_RETENTION_DAYS", "90"))
+        config.scheduler.brief_enabled = os.getenv("DAEMON_BRIEF_ENABLED", "false").lower() == "true"
+        config.scheduler.brief_interval_hours = int(os.getenv("DAEMON_BRIEF_INTERVAL_HOURS", "24"))
+        config.scheduler.brief_owner = os.getenv("DAEMON_BRIEF_OWNER", "")
         
         # Metrics
         config.metrics.enabled = os.getenv("DAEMON_METRICS_ENABLED", "true").lower() == "true"

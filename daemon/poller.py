@@ -54,6 +54,7 @@ class DataPoller:
         # Polling cursors for each source
         self._splunk_state = PollState()
         self._crowdstrike_state = PollState()
+        self._sentinelone_state = PollState()
         self._azure_sentinel_state = PollState()
         self._aws_security_hub_state = PollState()
         self._microsoft_defender_state = PollState()
@@ -63,6 +64,7 @@ class DataPoller:
         # Durable per-source dedup sets (Redis-backed)
         self._splunk_dedup = RedisDedupSet("poller:splunk")
         self._crowdstrike_dedup = RedisDedupSet("poller:crowdstrike")
+        self._sentinelone_dedup = RedisDedupSet("poller:sentinelone")
         self._azure_sentinel_dedup = RedisDedupSet("poller:azure_sentinel")
         self._aws_security_hub_dedup = RedisDedupSet("poller:aws_security_hub")
         self._microsoft_defender_dedup = RedisDedupSet("poller:microsoft_defender")
@@ -84,6 +86,8 @@ class DataPoller:
             "splunk_findings": 0,
             "crowdstrike_polls": 0,
             "crowdstrike_findings": 0,
+            "sentinelone_polls": 0,
+            "sentinelone_findings": 0,
             "azure_sentinel_polls": 0,
             "azure_sentinel_findings": 0,
             "aws_security_hub_polls": 0,
@@ -199,7 +203,17 @@ class DataPoller:
             tasks.append(asyncio.create_task(
                 self._poll_crowdstrike_loop(shutdown_event)
             ))
-        
+
+        # SentinelOne has no bespoke REST service class (it goes through the
+        # shared purple-mcp MCP client, same as the chat-side recipe
+        # executor and dashboard service) -- always spawned, same as the
+        # federation runner, and self-gates each cycle: if the MCP server
+        # isn't configured/connected, _poll_sentinelone logs at debug level
+        # and returns quietly rather than erroring the loop.
+        tasks.append(asyncio.create_task(
+            self._poll_sentinelone_loop(shutdown_event)
+        ))
+
         if self._azure_sentinel_service:
             tasks.append(asyncio.create_task(
                 self._poll_azure_sentinel_loop(shutdown_event)
@@ -473,6 +487,277 @@ class DataPoller:
             'embedding': []
         }
     
+    async def _poll_sentinelone_loop(self, shutdown_event: asyncio.Event):
+        """Poll SentinelOne for new alerts on interval."""
+        interval = self.config.sentinelone_interval
+        logger.info(f"SentinelOne polling loop started (interval: {interval}s)")
+
+        while not shutdown_event.is_set():
+            try:
+                await self._poll_sentinelone()
+            except Exception as e:
+                logger.error(f"SentinelOne polling error: {e}")
+                self.stats["errors"] += 1
+
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
+                break  # Shutdown requested
+            except asyncio.TimeoutError:
+                pass  # Continue polling
+
+    async def _poll_sentinelone(self):
+        """Poll SentinelOne (via the shared purple-mcp MCP client -- same
+        client services/sentinelone_recipe_executor.py and
+        services/sentinelone_dashboard_service.py use) for alerts within a
+        rolling lookback window, converts each to a Finding, and fires a
+        new-threat notification per newly-ingested alert.
+
+        Rewritten 2026-08-19 from cursor-based incremental polling to a
+        fixed rolling window (explicit user request, after live-confirming
+        the cursor design's fundamental limitation): SentinelOne's alert
+        pipeline has a genuine, multi-hour, VARIABLE-length lag between an
+        alert's detectedAt and when it becomes filterable via ANY
+        datetime field at all (confirmed live 2026-08-19 -- not a
+        filter-field choice; see the field-comparison note in
+        data/knowledge/sentinelone/mcp_tools.md). A cursor that only ever
+        advances forward can never self-heal from that: once the cursor
+        passes an alert's eventual index time, that alert is excluded
+        from every future query, permanently, by construction -- this
+        already caused confirmed, real alert loss earlier the same day.
+        A fixed rolling window (`now - sentinelone_lookback_hours` to
+        `now`) re-covers the ENTIRE lookback period on every single
+        cycle, so a slow-to-index alert gets caught on whichever cycle it
+        finally becomes visible, not just the one immediately after
+        detection. Re-fetching the same ~N hours of data every interval
+        is intentional, not wasteful -- alert-ID-based dedup (daemon/
+        dedup.py's RedisDedupSet, backed by services/ingestion_service.py's
+        DB-layer idempotency check) makes the overlap safe; most alerts
+        in most cycles are expected, routine re-fetches of already-
+        processed data, not a bug.
+
+        Self-gating, same style as _status_count/_vuln_severity_count in
+        the dashboard service: any MCP error (not configured, not
+        connected, tool error) is logged and the cycle is skipped quietly
+        rather than raising -- this loop is always spawned regardless of
+        whether SentinelOne is configured in this environment (mirrors
+        the federation runner's "always spawned, self-gates" pattern)."""
+        import json as _json
+
+        from services import sentinelone_recipe_executor as executor
+
+        self.stats["sentinelone_polls"] += 1
+
+        since_dt = datetime.utcnow() - timedelta(hours=self.config.sentinelone_lookback_hours)
+        since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        start_ms, err = await executor._call("iso_to_unix_timestamp", {"iso_datetime": since_iso})
+        if err:
+            # Bug found 2026-08-18: this was logged at .debug() while
+            # DAEMON_LOG_LEVEL defaults to INFO, so a real, repeating
+            # per-cycle failure here was completely invisible in
+            # production logs -- the live daemon polled every 20s for
+            # over an hour without ever ingesting a real alert (including
+            # two CRITICAL ransomware detections) and nothing showed up
+            # in `docker logs` to explain why. Every failure path in this
+            # function is raised to .warning() for the same reason.
+            logger.warning(f"SentinelOne poll skipped (iso_to_unix_timestamp failed): {err}")
+            return
+        try:
+            start_ms = int(start_ms)
+        except (TypeError, ValueError):
+            logger.warning(f"SentinelOne poll skipped: iso_to_unix_timestamp returned non-numeric {start_ms!r}")
+            return
+
+        # Full pagination within one cycle (explicit user request): a
+        # fixed multi-hour window at real alert volumes can genuinely
+        # exceed the API's first=100-per-page cap (confirmed live during
+        # the original 9-day-stale-cursor backlog catch-up, total=657 in
+        # one window) -- unlike the old cursor design, there's no "next
+        # cycle naturally covers the rest" fallback here, since the
+        # window doesn't advance; every cycle must fetch everything in
+        # its own window or silently under-cover it forever. Paginates
+        # via the last edge's own `cursor` field, not `pageInfo`
+        # (confirmed live 2026-08-19: pageInfo comes back empty from this
+        # API; the edge-level cursor does work for `after`).
+        all_rows: list[dict] = []
+        after_cursor: Optional[str] = None
+        total = 0
+        for _ in range(20):  # hard ceiling -- never loop forever on a pathological response
+            params = {
+                "filters": _json.dumps([{"fieldId": "lastSeenAt", "filterType": "datetime_range", "start": start_ms}]),
+                "first": 100,
+            }
+            if after_cursor:
+                params["after"] = after_cursor
+            result, err = await executor._call("search_alerts", params)
+            if err or not isinstance(result, dict):
+                logger.warning(f"SentinelOne search_alerts failed: {err!r} (result type: {type(result).__name__})")
+                break
+            total = executor._total_count(result) or 0
+            raw_edges = result.get("edges") or []
+            all_rows.extend(executor._edges(result))
+            if len(all_rows) >= total or not raw_edges:
+                break
+            last_cursor = raw_edges[-1].get("cursor") if isinstance(raw_edges[-1], dict) else None
+            if not last_cursor:
+                break
+            after_cursor = last_cursor
+
+        if total > len(all_rows):
+            logger.warning(
+                f"SentinelOne poll: {total} alert(s) in the {self.config.sentinelone_lookback_hours}h rolling "
+                f"window, only fetched {len(all_rows)} after pagination -- consider a shorter lookback or interval"
+            )
+
+        if all_rows:
+            logger.info(
+                f"SentinelOne poll: {len(all_rows)} row(s) fetched this cycle "
+                f"(rolling {self.config.sentinelone_lookback_hours}h window)"
+            )
+
+        new_count = 0
+        for alert in all_rows:
+            alert_id_for_log = alert.get("id")
+            finding = self._sentinelone_alert_to_finding(alert)
+            if not finding:
+                logger.warning(f"SentinelOne poll: alert {alert_id_for_log!r} -> _sentinelone_alert_to_finding returned None, skipping")
+                continue
+            already_processed = await self._sentinelone_dedup.is_processed(finding["finding_id"])
+            if already_processed:
+                # Expected and routine under the rolling-window design --
+                # most of every window overlaps the last cycle's window,
+                # so logging this per-alert would flood the logs for no
+                # diagnostic value (unlike the old cursor design, where
+                # this branch firing was itself a meaningful signal).
+                continue
+            try:
+                await self._enqueue_finding(finding, "sentinelone")
+                await self._sentinelone_dedup.mark_processed(finding["finding_id"])
+                logger.info(f"SentinelOne poll: {finding['finding_id']} enqueued and dedup-marked successfully")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"SentinelOne poll: {finding['finding_id']} enqueue/dedup-mark FAILED: {e}", exc_info=True)
+                continue
+            new_count += 1
+
+            # Two-phase notification (explicit user request, 2026-08-05):
+            # Phase 1 fires HERE, immediately, straight off the raw alert
+            # dict -- no Deep Visibility, no reputation lookups, nothing
+            # that takes real time, so the user hears about a new alert in
+            # well under a second. Phase 2 (the full investigative report)
+            # fires from inside the synergy pipeline once Venus/Athena
+            # finish -- capabilities/synergy.py's _notify_investigative_report
+            # needs their hash/process/reputation artifacts, which don't
+            # exist yet at raw ingestion. Both fire-and-forget so neither
+            # blocks the polling loop.
+            from capabilities.synergy import notify_new_alert_immediate
+
+            asyncio.create_task(notify_new_alert_immediate(finding["finding_id"], alert))
+            asyncio.create_task(self._dispatch_synergy_pipeline(
+                finding["finding_id"], finding["entity_context"].get("storyline_id"), alert.get("id"),
+                alert.get("detectedAt"),
+            ))
+
+        if new_count > 0:
+            logger.info(f"Polled {new_count} new alerts from SentinelOne")
+            self.stats["sentinelone_findings"] += new_count
+
+    def _sentinelone_alert_to_finding(self, alert: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Convert a SentinelOne Alert (search_alerts edge/node shape --
+        confirmed live: id, severity, status, name, description, detectedAt,
+        classification, confidenceLevel, detectionSource{product,vendor},
+        asset{id,name,type}, storylineId) to the finding dict shape shared
+        by every poller source in this file."""
+        alert_id = alert.get("id")
+        if not alert_id:
+            return None
+
+        finding_id = f"s1-{alert_id}"
+
+        severity_raw = (alert.get("severity") or "MEDIUM").upper()
+        severity_map = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+        severity = severity_map.get(severity_raw, "medium")
+
+        confidence_raw = (alert.get("confidenceLevel") or "").upper()
+        confidence_score_map = {"MALICIOUS": 0.95, "SUSPICIOUS": 0.6, "N/A": 0.4}
+        anomaly_score = confidence_score_map.get(confidence_raw, 0.5)
+
+        asset = alert.get("asset") or {}
+        detection_source = alert.get("detectionSource") or {}
+        entity_context = {
+            "hostnames": [asset["name"]] if asset.get("name") else [],
+            "device_id": asset.get("id"),
+            "storyline_id": alert.get("storylineId"),
+            "classification": alert.get("classification"),
+            "detection_engine": detection_source.get("product"),
+            # Bug found live 2026-08-18: Finding has no `title` column at
+            # all (database/models.py) -- the "title" key set below on the
+            # returned finding dict is silently discarded on ingest, so
+            # every downstream reader (capabilities/synergy.py's Phase 2
+            # report included) always saw title=None and fell back to the
+            # long, verbose `description` text as the report subject/
+            # greeting, even though SentinelOne's own alert.name is a
+            # short, clean label (confirmed live: "Potential PowerShell
+            # Encoded Command" vs. the multi-sentence description).
+            # entity_context IS a real persisted JSONB column, so storing
+            # it here (redundant with "title" below, but actually
+            # retrievable after a DB round-trip) is the fix that doesn't
+            # require a schema migration.
+            "alert_name": alert.get("name"),
+        }
+
+        return {
+            "finding_id": finding_id,
+            "data_source": "sentinelone",
+            "timestamp": alert.get("detectedAt") or alert.get("firstSeenAt") or datetime.utcnow().isoformat(),
+            "severity": severity,
+            "status": "new",
+            "title": alert.get("name") or "SentinelOne Alert",
+            "description": alert.get("description") or "",
+            "entity_context": entity_context,
+            "raw_event": alert,
+            "anomaly_score": anomaly_score,
+            "mitre_predictions": {},
+            "embedding": [],
+        }
+
+    async def _dispatch_synergy_pipeline(
+        self, finding_id: str, storyline_id: Optional[str], alert_id: Optional[str], detected_at: Optional[str] = None,
+    ) -> None:
+        """Waits for FindingProcessor to actually persist the Finding row
+        (it stores first, then triages/enriches -- see daemon/processor.py
+        _process_finding) before running Zeus's synergy chain, since the
+        chain's blackboard writes (capabilities/synergy.py's
+        _write_blackboard) need a real row to attach ai_enrichment to.
+        Bounded retry, not a fixed sleep -- processing time varies with
+        queue depth. Polls every 0.5s, not 2s (explicit user request,
+        2026-08-05: full investigative report within at most 3 minutes of
+        the alert -- catching the persisted row sooner on average matters
+        against that budget), same ~30s ceiling. Gives up quietly after
+        that (the finding still gets triaged normally by the existing
+        pipeline either way; it just won't have the deeper synergy
+        analysis attached). `detected_at` (the alert's own detection
+        time, passed through to the phase-2 notifier for SLA logging)."""
+        from services.database_data_service import DatabaseDataService
+        from capabilities.synergy import run_synergy_pipeline
+
+        svc = DatabaseDataService()
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            if svc.get_finding(finding_id):
+                break
+        else:
+            logger.warning(f"Synergy pipeline skipped for {finding_id}: finding row never appeared within 30s")
+            return
+
+        try:
+            outcome = await run_synergy_pipeline(finding_id, storyline_id, alert_id, detected_at)
+            logger.info(
+                f"Synergy pipeline complete for {finding_id}: verdict={outcome.highest_verdict}, "
+                f"{len(outcome.steps)} step(s), {len(outcome.compliance_notes)} compliance note(s)"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Synergy pipeline failed for {finding_id}: {e}")
+
     async def _run_webhook_server(self, shutdown_event: asyncio.Event):
         """Run a simple webhook server for external ingestion."""
         from aiohttp import web
