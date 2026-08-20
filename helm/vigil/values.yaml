@@ -309,6 +309,9 @@ dbInit:
     - 14_threat_indicators.sql
     - 15_federation.sql
     - 16_llm_budgets.sql
+    - 17_llm_job_dead_letters.sql
+    - 18_agent_task_state.sql
+    - 19_clients.sql
   resources:
     requests:
       cpu: 50m

@@ -190,6 +190,10 @@ export default function AIDecisionsPage() {
       mitre_analyst: 'MITRE', forensics: 'Forensics', threat_intel: 'Threat Intel',
       compliance: 'Compliance', malware_analyst: 'Malware', network_analyst: 'Network',
       orchestrator: 'Orchestrator',
+      // Unified-schema foundation, Phase 2, 2026-08-20: the synergy
+      // pipeline's own overall-verdict decision (Venus + Athena + gated
+      // Orion combined) -- not any single existing agent identity.
+      zeus_pipeline: 'Zeus (Pipeline)',
     }
     return names[agentId] || agentId
   }

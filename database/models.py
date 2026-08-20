@@ -90,6 +90,19 @@ class Finding(Base):
     # AI-generated enrichment (cached analysis)
     ai_enrichment: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
+    # Client scoping (#unified-schema). Nullable: resolved best-effort at
+    # ingestion time (services/ingestion_service.py) from the finding's
+    # hostname via services/sentinelone_dashboard_service.py's endpoint
+    # -> site-name map + services/client_registry_service.py's matcher --
+    # left null rather than guessed when resolution fails, same
+    # refuse-rather-than-guess posture as the SentinelOne grounding layer.
+    # No FK declared here on purpose -- see the note on Client below about
+    # init-file ordering; the ORM-level relationship still works fine
+    # since SQLAlchemy topologically sorts create_all() by dependency.
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("clients.client_id"), nullable=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, server_default="now()"
@@ -115,6 +128,7 @@ class Finding(Base):
         Index("idx_finding_data_source", "data_source"),
         Index("idx_finding_cluster_id", "cluster_id"),
         Index("idx_finding_anomaly_score", "anomaly_score"),
+        Index("idx_finding_client_id", "client_id"),
         Index(
             "idx_finding_description",
             "description",
@@ -149,6 +163,7 @@ class Finding(Base):
             "severity": self.severity,
             "status": self.status,
             "ai_enrichment": self.ai_enrichment,
+            "client_id": self.client_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -398,6 +413,24 @@ class AIDecisionLog(Base):
     actual_outcome: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     time_saved_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Decision capture (unified-schema foundation, Phase 2, 2026-08-20):
+    # a live approve/modify/override/escalate action an analyst took on
+    # this AI decision -- distinct from human_decision above (that's the
+    # older, retrospective agree/partial/disagree grading flow driven by
+    # AIDecisionFeedback.tsx, a different semantic axis: "was the AI
+    # right in hindsight" vs. "what did the analyst do about it right
+    # now"). reason_code is required (validated in
+    # database/service.py::record_decision_action) when decision_action
+    # is 'modify' or 'override'. fields_changed is the exact diff applied
+    # for a 'modify' action. linked_case_id is populated when an
+    # 'escalate' action creates a real case (backend/api/ai_decisions.py).
+    decision_action: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    reason_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    fields_changed: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    linked_case_id: Mapped[Optional[str]] = mapped_column(
+        String(50), ForeignKey("cases.case_id", ondelete="SET NULL"), nullable=True
+    )
+
     # Timestamps
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, server_default="now()"
@@ -414,6 +447,7 @@ class AIDecisionLog(Base):
         Index("idx_ai_decision_timestamp", "timestamp"),
         Index("idx_ai_decision_human_decision", "human_decision"),
         Index("idx_ai_decision_actual_outcome", "actual_outcome"),
+        Index("idx_ai_decision_action", "decision_action"),
     )
 
     def to_dict(self) -> dict:
@@ -438,6 +472,10 @@ class AIDecisionLog(Base):
             "action_appropriateness": self.action_appropriateness,
             "actual_outcome": self.actual_outcome,
             "time_saved_minutes": self.time_saved_minutes,
+            "decision_action": self.decision_action,
+            "reason_code": self.reason_code,
+            "fields_changed": self.fields_changed,
+            "linked_case_id": self.linked_case_id,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
             "feedback_timestamp": (
                 self.feedback_timestamp.isoformat() if self.feedback_timestamp else None
@@ -695,6 +733,79 @@ class FederationSource(Base):
             ),
             "last_error": self.last_error,
             "consecutive_errors": self.consecutive_errors,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class Client(Base):
+    """
+    Client -- the real, minimal per-tenant anchor Sentry Agentic did not
+    previously have (unified-schema foundation). Before this table,
+    services/client_registry_service.py's EDR/SIEM name-matcher was the
+    only "client" concept anywhere in the codebase, and it's explicitly
+    visibility-only (its own docstring): in-memory, never persisted, no
+    FK to findings/cases/users. This table is that matcher's real,
+    queryable, joinable counterpart.
+
+    `client_id` is a stable string slug (e.g. "cybervergent"), not an
+    auto-incrementing surrogate -- deliberately simple; this is not
+    trying to model a bigger multi-account SentinelOne/AlienVault
+    hierarchy than the platform needs right now.
+
+    Rows are upserted by services/client_registry_service.py's
+    `_sync_clients_table()`, called from the end of its existing
+    `refresh_snapshot()` -- this table is populated by reusing that
+    module's matching logic, not a separate/parallel mechanism.
+    """
+
+    __tablename__ = "clients"
+
+    client_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    # Same fields as client_registry_service.py's ClientRecord dataclass --
+    # this table is that in-memory record's persisted counterpart.
+    s1_site_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    av_deployment_name: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True
+    )
+    av_deployment_fqdn: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True
+    )
+    match_confidence: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )  # "exact" | "fuzzy" | "manual" | None
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index("idx_clients_s1_site_name", "s1_site_name"),
+        Index("idx_clients_av_deployment_name", "av_deployment_name"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "client_id": self.client_id,
+            "display_name": self.display_name,
+            "s1_site_name": self.s1_site_name,
+            "av_deployment_name": self.av_deployment_name,
+            "av_deployment_fqdn": self.av_deployment_fqdn,
+            "match_confidence": self.match_confidence,
+            "is_active": self.is_active,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -1870,6 +1981,20 @@ class User(Base):
         DateTime, nullable=True
     )
 
+    # Client scoping (#unified-schema): which client this user belongs to,
+    # for role-client users. Null for internal (analyst/admin/etc.) users.
+    # The ORM-level FK below is safe for create_all() (SQLAlchemy
+    # topologically sorts fresh-database table creation by dependency
+    # regardless of class declaration order) -- it's specifically the
+    # *raw SQL* version of this column (database/init/06_auth_tables.sql,
+    # which runs before 19_clients.sql in docker-compose's lexicographic
+    # init order) that must NOT declare this FK. A real FK for
+    # already-provisioned databases is added separately via
+    # scripts/migrate_schema.py, which controls its own step ordering.
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("clients.client_id"), nullable=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, server_default="now()"
@@ -1888,6 +2013,7 @@ class User(Base):
         Index("idx_user_email", "email"),
         Index("idx_user_role_id", "role_id"),
         Index("idx_user_is_active", "is_active"),
+        Index("idx_user_client_id", "client_id"),
     )
 
     def to_dict(self) -> dict:
@@ -1901,6 +2027,7 @@ class User(Base):
             "is_active": self.is_active,
             "is_verified": self.is_verified,
             "mfa_enabled": self.mfa_enabled,
+            "client_id": self.client_id,
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "login_count": self.login_count,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -2890,4 +3017,86 @@ class ThreatIndicator(Base):
             "valid_until": self.valid_until.isoformat() if self.valid_until else None,
             "first_seen": self.first_seen.isoformat() if self.first_seen else None,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
+        }
+
+
+class LLMJobDeadLetter(Base):
+    """Dead-letter record for ARQ LLM jobs that exhausted their retry
+    budget. Runtime-hardening gap fixed 2026-08-18 -- see
+    `database/init/17_llm_job_dead_letters.sql` for why this table
+    exists; written by `services/llm_worker.py`, read by
+    `backend/api/system.py`'s dead-letter endpoint.
+    """
+
+    __tablename__ = "llm_job_dead_letters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    function_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    error: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    finding_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    investigation_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    agent_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    context: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    failed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default="now()"
+    )
+
+    __table_args__ = (
+        Index("idx_llm_job_dead_letters_failed_at", "failed_at"),
+        Index("idx_llm_job_dead_letters_finding_id", "finding_id"),
+        Index("idx_llm_job_dead_letters_investigation_id", "investigation_id"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "function_name": self.function_name,
+            "error": self.error,
+            "attempts": self.attempts,
+            "finding_id": self.finding_id,
+            "investigation_id": self.investigation_id,
+            "agent_id": self.agent_id,
+            "context": self.context,
+            "failed_at": self.failed_at.isoformat() if self.failed_at else None,
+        }
+
+
+class AgentTaskState(Base):
+    """Processing checkpoint for one finding, distinct from ingestion
+    status. See `database/init/18_agent_task_state.sql` for why this
+    table exists -- written and read by `daemon/processor.py`, scanned on
+    daemon startup (`daemon/main.py`) to resume anything left
+    `in_progress` when the process last stopped.
+    """
+
+    __tablename__ = "agent_task_state"
+
+    finding_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    stage: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default="now()"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default="now()"
+    )
+
+    __table_args__ = (
+        Index("idx_agent_task_state_status", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "finding_id": self.finding_id,
+            "status": self.status,
+            "stage": self.stage,
+            "attempts": self.attempts,
+            "last_error": self.last_error,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

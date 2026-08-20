@@ -27,6 +27,7 @@ import {
   PlayCircleOutline as PlaybookIcon,
 } from '@mui/icons-material'
 import { findingsApi, agentsApi, workflowApi } from '../../services/api'
+import { useSelectedClient } from '../../contexts/SelectedClientContext'
 import FindingDetailDialog from './FindingDetailDialog'
 import { notificationService } from '../../services/notifications'
 import { SeverityChip } from '../ui'
@@ -67,6 +68,7 @@ export default function FindingsTable({ filters = {}, searchQuery = '', limit, r
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [hoveredRow, setHoveredRow] = useState<string | null>(null)
   const theme = useTheme()
+  const { selectedClient } = useSelectedClient()
 
   // Column resizing state
   const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>({
@@ -93,7 +95,7 @@ export default function FindingsTable({ filters = {}, searchQuery = '', limit, r
 
   useEffect(() => {
     loadFindings()
-  }, [stableFilters, searchQuery, limit, refreshKey])
+  }, [stableFilters, searchQuery, limit, refreshKey, selectedClient])
 
   useEffect(() => {
     agentsApi.listAgents()
@@ -110,10 +112,11 @@ export default function FindingsTable({ filters = {}, searchQuery = '', limit, r
     try {
       setLoading(true)
       const params: any = { ...stableFilters, limit }
+      if (selectedClient?.client_id) params.client_id = selectedClient.client_id
       Object.keys(params).forEach(key => {
         if (!params[key]) delete params[key]
       })
-      
+
       const response = await findingsApi.getAll(params)
       let newFindings = response.data.findings || []
       
@@ -407,11 +410,12 @@ export default function FindingsTable({ filters = {}, searchQuery = '', limit, r
   return (
     <>
       <TableContainer>
-        <Table 
-          size="small" 
-          sx={{ 
+        <Table
+          size="small"
+          sx={{
             tableLayout: 'fixed',
-            width: Object.values(columnWidths).reduce((a, b) => a + b, 0),
+            width: '100%',
+            minWidth: Object.values(columnWidths).reduce((a, b) => a + b, 0),
           }}
         >
           <TableHead>

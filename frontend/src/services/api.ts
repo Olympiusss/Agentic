@@ -115,7 +115,28 @@ export const aiDecisionsApi = {
   
   getPendingFeedback: (limit?: number) =>
     api.get('/ai/decisions/pending-feedback', { params: { limit } }),
+
+  // Unified-schema foundation, Phase 2, 2026-08-20: a live decision
+  // action, distinct from submitFeedback above (retrospective grading).
+  submitAction: (decisionId: string, data: {
+    decision_action: 'approve' | 'modify' | 'override' | 'escalate'
+    reviewer: string
+    reason_code?: string
+    fields_changed?: Record<string, { from: any; to: any }>
+    comment?: string
+    escalate_to?: string
+  }) => api.post(`/ai/decisions/${decisionId}/action`, data),
 }
+
+export const DECISION_REASON_CODES = [
+  'false_positive',
+  'duplicate',
+  'insufficient_evidence',
+  'wrong_severity',
+  'wrong_entity_attribution',
+  'policy_exception',
+  'other',
+] as const
 
 // Approvals API (#128) — pending human-in-the-loop actions, including
 // workflow phase approvals that pause execution until a decision is made.
@@ -146,6 +167,9 @@ export const findingsApi = {
     min_anomaly_score?: number
     limit?: number
     force_refresh?: boolean
+    // Unified-schema foundation, 2026-08-20. Ignored/overridden server-side
+    // for role-client users -- see backend/api/findings.py.
+    client_id?: string
   }) => api.get('/findings/', { params }),
   
   getById: (id: string) => api.get(`/findings/${id}`),
@@ -163,6 +187,24 @@ export const findingsApi = {
     api.post(`/findings/${id}/enrich`, null, { params: { force_regenerate } }),
 
   deleteAll: () => api.delete('/findings/all'),
+}
+
+// SentinelOne real-time dashboard snapshot (background-refreshed every 5
+// minutes server-side, see services/sentinelone_dashboard_service.py)
+export const dashboardApi = {
+  getSentinelOneOverview: () => api.get('/dashboard/sentinelone-overview'),
+  getStrategicInsights: () => api.get('/dashboard/strategic-insights'),
+}
+
+// Client registry API -- EDR (SentinelOne) / SIEM (AlienVault Central) / Both per client
+export const clientsApi = {
+  getAll: () => api.get('/clients/'),
+  createOverride: (s1_site_name: string, av_deployment_name: string) =>
+    api.post('/clients/overrides', { s1_site_name, av_deployment_name }),
+  deleteOverride: (s1_site_name: string) =>
+    api.delete(`/clients/overrides/${encodeURIComponent(s1_site_name)}`),
+  getDetail: (name: string, hoursBack: number = 24) =>
+    api.get(`/clients/${encodeURIComponent(name)}/detail`, { params: { hours_back: hoursBack } }),
 }
 
 // Cases API
@@ -873,6 +915,11 @@ export const configApi = {
     thinking_budget: number
   }) => api.post('/config/ai-operations', data),
 
+  // Runtime notification-channel toggles (2026-08-20)
+  getNotifications: () => api.get('/config/notifications'),
+  setNotifications: (data: { email_notifications_enabled: boolean }) =>
+    api.post('/config/notifications', data),
+
   getDarktrace: () => api.get('/config/darktrace'),
   setDarktrace: (data: {
     enabled: boolean
@@ -1117,6 +1164,57 @@ export const budgetsApi = {
   set: (payload: BudgetSettings) =>
     api.put<BudgetSettings>('/analytics/budget', payload),
   getQuota: () => api.get<BudgetQuotaResponse>('/analytics/budget/quota'),
+}
+
+export interface TaskStateRow {
+  finding_id: string
+  status: string
+  stage: string | null
+  attempts: number
+  last_error: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface TaskStateSummary {
+  counts: { pending: number; in_progress: number; completed: number; failed: number }
+  stuck: TaskStateRow[]
+  recent_failed: TaskStateRow[]
+}
+
+export interface ObservabilityStatus {
+  otel_enabled: boolean
+  jaeger_port: number
+  grafana_port: number
+  prometheus_port: number
+  note: string
+}
+
+export interface DeadLetterRow {
+  id: number
+  job_id: string | null
+  function_name: string
+  error: string
+  attempts: number
+  finding_id: string | null
+  investigation_id: string | null
+  agent_id: string | null
+  context: Record<string, unknown> | null
+  failed_at: string | null
+}
+
+export const systemApi = {
+  // Crash-resume checkpoint state (database/init/18_agent_task_state.sql) --
+  // what daemon/processor.py has in flight, stuck, or recently failed.
+  getTaskStateSummary: () => api.get<TaskStateSummary>('/system/task-state'),
+
+  // Whether LLM/agent tracing (OTEL -> otel-collector -> Jaeger/Prometheus)
+  // is actually turned on right now, not just whether the code supports it.
+  getObservabilityStatus: () => api.get<ObservabilityStatus>('/system/observability-status'),
+
+  // Background LLM jobs that exhausted their retry budget (services/llm_worker.py).
+  getDeadLetters: (params?: { finding_id?: string; investigation_id?: string; limit?: number }) =>
+    api.get<DeadLetterRow[]>('/system/dead-letters', { params }),
 }
 
 export const analyticsApi = {

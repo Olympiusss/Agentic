@@ -144,7 +144,31 @@ class IngestionService:
                 
                 # Parse timestamp
                 timestamp = self.parse_timestamp(finding_data.get('timestamp'))
-                
+
+                # Client scoping (unified-schema foundation, 2026-08-20):
+                # best-effort resolution from the finding's hostname, reusing
+                # the exact same get_site_for_endpoint() mechanism
+                # capabilities/synergy.py already uses for its own
+                # notification client_name -- same source of truth, not
+                # re-derived. Never blocks ingestion; leaves client_id=None
+                # on any failure to resolve rather than guessing, matching
+                # the SentinelOne grounding layer's own established
+                # refuse-rather-than-guess posture.
+                client_id = None
+                try:
+                    hostnames = (finding_data.get('entity_context') or {}).get('hostnames') or []
+                    if hostnames:
+                        from services.sentinelone_dashboard_service import get_site_for_endpoint
+                        from services.client_registry_service import find_client, client_id_for_record
+
+                        site_name = get_site_for_endpoint(hostnames[0])
+                        if site_name:
+                            record = find_client(site_name)
+                            if record:
+                                client_id = client_id_for_record(record)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"Client resolution skipped for {finding_id}: {e}")
+
                 # Create finding in database
                 finding = self.db_service.create_finding(
                     finding_id=finding_id,
@@ -159,7 +183,8 @@ class IngestionService:
                     evidence_links=finding_data.get('evidence_links'),
                     cluster_id=finding_data.get('cluster_id'),
                     severity=finding_data.get('severity'),
-                    status=finding_data.get('status', 'new')
+                    status=finding_data.get('status', 'new'),
+                    client_id=client_id
                 )
                 
                 if finding:

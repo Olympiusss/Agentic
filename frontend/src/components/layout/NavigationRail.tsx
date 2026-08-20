@@ -14,18 +14,26 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
+  ListItemIcon as MenuItemIcon,
   Tooltip,
   Typography,
-  alpha,
 } from '@mui/material'
 import {
   DashboardOutlined as DashboardIcon,
   SettingsOutlined as SettingsIcon,
-  ChatOutlined as ChatIcon,
+  HistoryOutlined as HistoryIcon,
+  AutoAwesomeOutlined as PromptsIcon,
+  BusinessOutlined as ClientsIcon,
   ChevronLeft,
   ChevronRight,
+  LightModeOutlined as LightModeIcon,
+  DarkModeOutlined as DarkModeIcon,
+  Brightness4Outlined as SystemModeIcon,
+  Check as CheckIcon,
 } from '@mui/icons-material'
-import UserMenu from '../auth/UserMenu'
+import { useThemePreference, type ThemePreference } from '../../contexts/ThemeContext'
 
 const COLLAPSED_WIDTH = 60
 const EXPANDED_WIDTH = 220
@@ -38,7 +46,11 @@ const WHITE_DIM = 'rgba(255,255,255,0.55)'
 const HOVER_BG  = 'rgba(26,106,255,0.14)'
 const ACTIVE_BG = 'rgba(26,106,255,0.22)'
 
-// Sentry Agentic Logo - 3D glassmorphic shield
+// Sentry Agentic Logo - corrected to match the reference design: a
+// symmetric shield with three EQUAL-height vertical bars (the previous
+// version had an asymmetric, center-bar-taller layout that drifted from
+// spec -- this is the "design tampered with" fix). Shared markup with
+// ClaudeDrawer's header logo so there's one canonical logo, not two.
 const SentryLogoSmall = () => (
   <svg width="26" height="29" viewBox="0 0 100 110" fill="none" xmlns="http://www.w3.org/2000/svg">
     <defs>
@@ -51,37 +63,24 @@ const SentryLogoSmall = () => (
         <stop offset="0%" stopColor="rgba(255,255,255,0.38)" />
         <stop offset="100%" stopColor="rgba(255,255,255,0)" />
       </linearGradient>
-      <filter id="navsg-glow" x="-20%" y="-15%" width="140%" height="140%">
-        <feGaussianBlur stdDeviation="2.5" result="g" />
-        <feMerge><feMergeNode in="g" /><feMergeNode in="SourceGraphic" /></feMerge>
-      </filter>
       <clipPath id="navsg-clip">
-        <path d="M50 3 L95 20 L95 62 C95 88 50 107 50 107 C50 107 5 88 5 62 L5 20 Z" />
+        <path d="M50 4 L90 20 L90 60 Q90 90 50 106 Q10 90 10 60 L10 20 Z" />
       </clipPath>
     </defs>
-    {/* Glow halo */}
-    <path d="M50 3 L95 20 L95 62 C95 88 50 107 50 107 C50 107 5 88 5 62 L5 20 Z"
-      fill="rgba(26,106,255,0.28)" filter="url(#navsg-glow)" />
-    {/* Shield body */}
-    <path d="M50 3 L95 20 L95 62 C95 88 50 107 50 107 C50 107 5 88 5 62 L5 20 Z"
-      fill="url(#navsg-grad)" />
+    {/* Shield body -- symmetric outline */}
+    <path d="M50 4 L90 20 L90 60 Q90 90 50 106 Q10 90 10 60 L10 20 Z" fill="url(#navsg-grad)" />
     {/* Inner edge */}
-    <path d="M50 7 L91 23 L91 62 C91 85 50 103 50 103 C50 103 9 85 9 62 L9 23 Z"
+    <path d="M50 8 L86 22.5 L86 59 Q86 85 50 100 Q14 85 14 59 L14 22.5 Z"
       fill="none" stroke="rgba(120,170,255,0.3)" strokeWidth="1.5" />
-    {/* Left bar */}
-    <rect x="21" y="42" width="14" height="42" rx="7" fill="rgba(255,255,255,0.14)" />
-    <rect x="21" y="42" width="14" height="42" rx="7" fill="none" stroke="rgba(255,255,255,0.68)" strokeWidth="1.2" />
-    <rect x="23" y="44" width="6" height="12" rx="3" fill="rgba(255,255,255,0.42)" />
-    {/* Center bar */}
-    <rect x="43" y="32" width="14" height="52" rx="7" fill="rgba(255,255,255,0.14)" />
-    <rect x="43" y="32" width="14" height="52" rx="7" fill="none" stroke="rgba(255,255,255,0.72)" strokeWidth="1.2" />
-    <rect x="45" y="34" width="6" height="14" rx="3" fill="rgba(255,255,255,0.48)" />
-    {/* Right bar */}
-    <rect x="65" y="42" width="14" height="42" rx="7" fill="rgba(255,255,255,0.14)" />
-    <rect x="65" y="42" width="14" height="42" rx="7" fill="none" stroke="rgba(255,255,255,0.68)" strokeWidth="1.2" />
-    <rect x="67" y="44" width="6" height="12" rx="3" fill="rgba(255,255,255,0.42)" />
+    {/* Three equal-height bars, evenly spaced and centered */}
+    <rect x="21" y="34" width="14" height="46" rx="7" fill="rgba(255,255,255,0.16)" />
+    <rect x="21" y="34" width="14" height="46" rx="7" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" />
+    <rect x="43" y="34" width="14" height="46" rx="7" fill="rgba(255,255,255,0.16)" />
+    <rect x="43" y="34" width="14" height="46" rx="7" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" />
+    <rect x="65" y="34" width="14" height="46" rx="7" fill="rgba(255,255,255,0.16)" />
+    <rect x="65" y="34" width="14" height="46" rx="7" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" />
     {/* Gloss highlight */}
-    <path d="M50 7 L91 23 L91 44 C70 37 30 37 9 44 L9 23 Z"
+    <path d="M50 8 L86 22.5 L86 40 C65 33 35 33 14 40 L14 22.5 Z"
       fill="url(#navsg-gloss)" clipPath="url(#navsg-clip)" />
   </svg>
 )
@@ -94,17 +93,87 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: <DashboardIcon sx={{ fontSize: 20 }} />, path: '/' },
-  { id: 'settings',  label: 'Settings',        icon: <SettingsIcon  sx={{ fontSize: 20 }} />, path: '/settings' },
+  { id: 'dashboard', label: 'Dashboard',     icon: <DashboardIcon sx={{ fontSize: 20 }} />, path: '/' },
+  { id: 'clients',   label: 'Clients',       icon: <ClientsIcon   sx={{ fontSize: 20 }} />, path: '/clients' },
+  { id: 'chats',     label: 'Chats History', icon: <HistoryIcon   sx={{ fontSize: 20 }} />, path: '/chats' },
+  { id: 'prompts',   label: 'Prompts Repo',  icon: <PromptsIcon   sx={{ fontSize: 20 }} />, path: '/prompts' },
+  { id: 'settings',  label: 'Settings',      icon: <SettingsIcon  sx={{ fontSize: 20 }} />, path: '/settings' },
 ]
 
-interface NavigationRailProps {
-  enabledIntegrations?: string[]
-  onOpenChat?: () => void
-  chatOpen?: boolean
+interface ThemeOption {
+  value: ThemePreference
+  label: string
+  icon: React.ReactNode
 }
 
-export default function NavigationRail({ onOpenChat, chatOpen = false }: NavigationRailProps) {
+const themeOptions: ThemeOption[] = [
+  { value: 'light',  label: 'Light',   icon: <LightModeIcon sx={{ fontSize: 18 }} /> },
+  { value: 'dark',   label: 'Dark',    icon: <DarkModeIcon sx={{ fontSize: 18 }} /> },
+  { value: 'system', label: 'System',  icon: <SystemModeIcon sx={{ fontSize: 18 }} /> },
+]
+
+function ThemeSwitcher({ expanded }: { expanded: boolean }) {
+  const { preference, setPreference } = useThemePreference()
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
+  const open = Boolean(anchorEl)
+  const current = themeOptions.find((o) => o.value === preference) || themeOptions[1]
+
+  const handleSelect = (value: ThemePreference) => {
+    setPreference(value)
+    setAnchorEl(null)
+  }
+
+  const button = (
+    <ListItemButton
+      onClick={(e) => setAnchorEl(e.currentTarget)}
+      sx={{
+        minHeight: 40,
+        justifyContent: expanded ? 'flex-start' : 'center',
+        px: expanded ? 1.5 : 0,
+        mx: 1,
+        borderRadius: 2,
+        '&:hover': { bgcolor: HOVER_BG },
+      }}
+    >
+      <ListItemIcon sx={{ minWidth: expanded ? 32 : 'auto', color: WHITE_DIM }}>
+        {current.icon}
+      </ListItemIcon>
+      {expanded && (
+        <ListItemText
+          primary={`Theme: ${current.label}`}
+          primaryTypographyProps={{ fontSize: '0.82rem', fontWeight: 400, color: WHITE_DIM }}
+        />
+      )}
+    </ListItemButton>
+  )
+
+  return (
+    <>
+      {expanded ? button : (
+        <Tooltip title={`Theme: ${current.label}`} placement="right" arrow>
+          {button}
+        </Tooltip>
+      )}
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        {themeOptions.map((opt) => (
+          <MenuItem key={opt.value} selected={opt.value === preference} onClick={() => handleSelect(opt.value)}>
+            <MenuItemIcon sx={{ minWidth: 32 }}>{opt.icon}</MenuItemIcon>
+            <ListItemText primary={opt.label} />
+            {opt.value === preference && <CheckIcon sx={{ fontSize: 16, ml: 1, color: ACCENT }} />}
+          </MenuItem>
+        ))}
+      </Menu>
+    </>
+  )
+}
+
+export default function NavigationRail() {
   const [expanded, setExpanded] = useState(false)
   const navigate  = useNavigate()
   const location  = useLocation()
@@ -145,43 +214,6 @@ export default function NavigationRail({ onOpenChat, chatOpen = false }: Navigat
             </Box>
           )}
         </Box>
-        {expanded && <UserMenu />}
-      </Box>
-
-      {/* --- Chat button --- */}
-      <Box sx={{ px: 1, pb: 0.5 }}>
-        {expanded ? (
-          <ListItemButton
-            onClick={onOpenChat}
-            sx={{
-              minHeight: 40, px: 1.5, borderRadius: 2,
-              bgcolor: chatOpen ? ACTIVE_BG : HOVER_BG,
-              '&:hover': { bgcolor: ACTIVE_BG },
-            }}
-          >
-            <ListItemIcon sx={{ minWidth: 34, color: ACCENT }}>
-              <ChatIcon sx={{ fontSize: 20 }} />
-            </ListItemIcon>
-            <ListItemText
-              primary="Sentry Chat"
-              primaryTypographyProps={{ fontSize: '0.82rem', fontWeight: 600, color: ACCENT }}
-            />
-          </ListItemButton>
-        ) : (
-          <Tooltip title="Sentry Chat" placement="right" arrow>
-            <IconButton
-              onClick={onOpenChat}
-              sx={{
-                width: '100%', borderRadius: 2, py: 1,
-                color: ACCENT,
-                bgcolor: chatOpen ? ACTIVE_BG : 'transparent',
-                '&:hover': { bgcolor: HOVER_BG },
-              }}
-            >
-              <ChatIcon sx={{ fontSize: 20 }} />
-            </IconButton>
-          </Tooltip>
-        )}
       </Box>
 
       {/* Thin separator */}
@@ -229,6 +261,11 @@ export default function NavigationRail({ onOpenChat, chatOpen = false }: Navigat
           )
         })}
       </List>
+
+      {/* --- Theme switcher --- */}
+      <Box sx={{ py: 0.5, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+        <ThemeSwitcher expanded={expanded} />
+      </Box>
 
       {/* --- Collapse toggle --- */}
       <Box sx={{ px: 1, py: 1, borderTop: '1px solid rgba(255,255,255,0.08)' }}>

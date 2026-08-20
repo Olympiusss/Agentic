@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Box, CircularProgress } from '@mui/material'
 import { AuthProvider } from './contexts/AuthContext'
+import { SelectedClientProvider } from './contexts/SelectedClientContext'
 import ProtectedRoute from './components/auth/ProtectedRoute'
 import MainLayout from './components/layout/MainLayout'
 
@@ -21,6 +22,9 @@ const Analytics = lazy(() => import('./pages/Analytics'))
 const Skills = lazy(() => import('./pages/Skills'))
 const Orchestrator = lazy(() => import('./pages/Orchestrator'))
 const BuilderTool = lazy(() => import('./pages/BuilderTool'))
+const PromptsRepo = lazy(() => import('./pages/PromptsRepo'))
+const ChatsHistory = lazy(() => import('./pages/ChatsHistory'))
+const Clients = lazy(() => import('./pages/Clients'))
 
 const PageFallback = () => (
   <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, minHeight: 200 }}>
@@ -31,6 +35,7 @@ const PageFallback = () => (
 function App() {
   return (
     <AuthProvider>
+      <SelectedClientProvider>
       <Box sx={{ display: 'flex', height: '100vh' }}>
         <Suspense fallback={<PageFallback />}>
         <Routes>
@@ -59,8 +64,11 @@ function App() {
             <Route path="investigation" element={<Investigation />} />
             <Route path="timesketch" element={<Timesketch />} />
             <Route path="analytics" element={<Analytics />} />
+            <Route path="clients" element={<Clients />} />
             <Route path="analytics/cost" element={<Navigate to="/settings?tab=general" replace />} />
             <Route path="skills" element={<Skills />} />
+            <Route path="prompts" element={<PromptsRepo />} />
+            <Route path="chats" element={<ChatsHistory />} />
             <Route path="builder" element={<BuilderTool />} />
             <Route path="workflow-builder" element={<Navigate to="/builder" replace />} />
             <Route path="orchestrator" element={<Orchestrator />} />
@@ -92,6 +100,7 @@ function App() {
         </Routes>
         </Suspense>
       </Box>
+      </SelectedClientProvider>
     </AuthProvider>
   )
 }

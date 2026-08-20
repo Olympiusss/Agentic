@@ -134,6 +134,68 @@ def create_missing_tables(conn):
 
 
 # ---------------------------------------------------------------------------
+# Client scoping (unified-schema foundation, 2026-08-20)
+#
+# The `clients` table itself doesn't need its own migration step here --
+# it's a new entry in database/models.py's Base.metadata, so the
+# "Create any missing tables from models" step directly above already
+# creates it on an already-provisioned database. These two steps just
+# add the client_id column to the two already-existing tables that
+# reference it (findings, users) -- registered AFTER the table-creation
+# step above so the FK target already exists when these ALTERs run.
+# ---------------------------------------------------------------------------
+
+@migration("Add client_id column to findings")
+def add_findings_client_id(conn):
+    conn.execute(text("""
+        ALTER TABLE findings ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)
+        REFERENCES clients(client_id);
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_finding_client_id ON findings(client_id);
+    """))
+
+
+@migration("Add client_id column to users")
+def add_users_client_id(conn):
+    conn.execute(text("""
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)
+        REFERENCES clients(client_id);
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_user_client_id ON users(client_id);
+    """))
+
+
+# ---------------------------------------------------------------------------
+# Decision capture (unified-schema foundation, Phase 2, 2026-08-20)
+#
+# ai_decision_logs is an ORM-only table (same rule as findings -- see the
+# note on migration #10/#11 above and database/init/README.md), so these
+# columns go through this script, not a database/init/*.sql file.
+# ---------------------------------------------------------------------------
+
+@migration("Add decision-capture columns to ai_decision_logs")
+def add_ai_decision_action_columns(conn):
+    conn.execute(text("""
+        ALTER TABLE ai_decision_logs ADD COLUMN IF NOT EXISTS decision_action VARCHAR(20);
+    """))
+    conn.execute(text("""
+        ALTER TABLE ai_decision_logs ADD COLUMN IF NOT EXISTS reason_code VARCHAR(50);
+    """))
+    conn.execute(text("""
+        ALTER TABLE ai_decision_logs ADD COLUMN IF NOT EXISTS fields_changed JSONB;
+    """))
+    conn.execute(text("""
+        ALTER TABLE ai_decision_logs ADD COLUMN IF NOT EXISTS linked_case_id VARCHAR(50)
+        REFERENCES cases(case_id) ON DELETE SET NULL;
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_ai_decision_action ON ai_decision_logs(decision_action);
+    """))
+
+
+# ---------------------------------------------------------------------------
 # Seed data
 # ---------------------------------------------------------------------------
 

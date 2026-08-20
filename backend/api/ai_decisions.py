@@ -67,8 +67,40 @@ class AIDecisionResponse(BaseModel):
     action_appropriateness: Optional[float]
     actual_outcome: Optional[str]
     time_saved_minutes: Optional[int]
+    # Decision capture (unified-schema foundation, Phase 2, 2026-08-20)
+    decision_action: Optional[str] = None
+    reason_code: Optional[str] = None
+    fields_changed: Optional[dict] = None
+    linked_case_id: Optional[str] = None
     timestamp: str
     feedback_timestamp: Optional[str]
+
+
+# Unified-schema foundation, Phase 2, 2026-08-20. No existing vocabulary
+# anywhere in the codebase to anchor this to -- starter set per explicit
+# product decision, easily extended later since reason_code is a plain
+# string column, not a DB enum type.
+_VALID_REASON_CODES = {
+    "false_positive", "duplicate", "insufficient_evidence",
+    "wrong_severity", "wrong_entity_attribution", "policy_exception", "other",
+}
+_VALID_DECISION_ACTIONS = {"approve", "modify", "override", "escalate"}
+
+
+class DecisionActionRequest(BaseModel):
+    """Request model for a live approve/modify/override/escalate action
+    on an AI decision -- distinct from SubmitFeedbackRequest above (that's
+    the retrospective agree/partial/disagree grading flow)."""
+    decision_action: str = Field(..., description="'approve' | 'modify' | 'override' | 'escalate'")
+    reviewer: str = Field(..., description="Name/ID of the analyst taking the action")
+    reason_code: Optional[str] = Field(
+        None, description="Required when decision_action is 'modify' or 'override'"
+    )
+    fields_changed: Optional[dict] = Field(
+        None, description="{'field': {'from': ..., 'to': ...}} -- applied when decision_action is 'modify'"
+    )
+    comment: Optional[str] = Field(None, description="Optional free-text note")
+    escalate_to: Optional[str] = Field(None, description="Assignee, used only when decision_action == 'escalate'")
 
 
 class AIDecisionStatsResponse(BaseModel):
@@ -152,6 +184,114 @@ async def submit_feedback(decision_id: str, request: SubmitFeedbackRequest):
         raise
     except Exception as e:
         logger.error(f"Error submitting feedback: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/decisions/{decision_id}/action", response_model=AIDecisionResponse)
+async def submit_decision_action(decision_id: str, request: DecisionActionRequest):
+    """
+    Record a live approve/modify/override/escalate action an analyst took
+    on an AI decision (unified-schema foundation, Phase 2, 2026-08-20).
+
+    - modify: applies `fields_changed` to the linked finding.
+    - escalate: creates a real case, links the finding to it via the
+      same one-call path backend/api/cases.py's own POST / uses
+      (data_service.create_case(..., finding_ids=[...])), and records
+      the resulting case_id on this decision.
+    - modify/override require a reason_code.
+    """
+    decision_action = request.decision_action
+    if decision_action not in _VALID_DECISION_ACTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"decision_action must be one of {sorted(_VALID_DECISION_ACTIONS)}",
+        )
+    if decision_action in ("modify", "override"):
+        if not request.reason_code:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reason_code is required when decision_action is '{decision_action}'",
+            )
+        if request.reason_code not in _VALID_REASON_CODES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"reason_code must be one of {sorted(_VALID_REASON_CODES)}",
+            )
+
+    try:
+        db_service = DatabaseService()
+        existing = db_service.get_ai_decision(decision_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"AI decision not found: {decision_id}")
+
+        linked_case_id = None
+
+        if decision_action == "modify" and request.fields_changed:
+            if not existing.finding_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Cannot modify: this decision has no linked finding_id",
+                )
+            from services.database_data_service import DatabaseDataService
+
+            updates = {k: v.get("to") for k, v in request.fields_changed.items()}
+            data_service = DatabaseDataService()
+            if not data_service.update_finding(existing.finding_id, **updates):
+                raise HTTPException(status_code=500, detail="Failed to apply modification to finding")
+
+        elif decision_action == "escalate":
+            if not existing.finding_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Cannot escalate: this decision has no linked finding_id",
+                )
+            from services.database_data_service import DatabaseDataService
+
+            data_service = DatabaseDataService()
+            finding = data_service.get_finding(existing.finding_id)
+            title = (
+                f"Escalated: {(finding.get('description') or existing.finding_id)[:80]}"
+                if finding else f"Escalated: {existing.finding_id}"
+            )
+            severity = (finding or {}).get("severity") or "medium"
+            priority = severity if severity in ("critical", "high", "medium", "low") else "medium"
+            description_parts = [f"Escalated from AI decision {decision_id}."]
+            if request.reason_code:
+                description_parts.append(f"Reason: {request.reason_code}.")
+            if request.comment:
+                description_parts.append(request.comment)
+            case = data_service.create_case(
+                title=title,
+                finding_ids=[existing.finding_id],
+                priority=priority,
+                description=" ".join(description_parts),
+                status="open",
+            )
+            if not case:
+                raise HTTPException(status_code=500, detail="Failed to create escalation case")
+            linked_case_id = case.get("case_id")
+            if request.escalate_to:
+                data_service.update_case(linked_case_id, assignee=request.escalate_to)
+
+        decision = db_service.record_decision_action(
+            decision_id=decision_id,
+            decision_action=decision_action,
+            reviewer=request.reviewer,
+            reason_code=request.reason_code,
+            fields_changed=request.fields_changed,
+            comment=request.comment,
+            linked_case_id=linked_case_id,
+        )
+
+        if not decision:
+            raise HTTPException(status_code=500, detail="Failed to record decision action")
+
+        return AIDecisionResponse(**decision.to_dict())
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting decision action: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -1,11 +1,13 @@
 """Findings API endpoints."""
 
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 import logging
 
 from services.database_data_service import DatabaseDataService
+from database.models import User
+from backend.middleware.auth import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -30,15 +32,17 @@ async def get_findings(
     min_anomaly_score: Optional[float] = Query(None),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None, description="Text search across finding IDs, descriptions, entity context"),
+    client_id: Optional[str] = Query(None, description="Filter by client (ignored/overridden for role-client users)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     sort_by: str = Query("timestamp"),
     sort_order: str = Query("desc"),
-    force_refresh: bool = Query(False)
+    force_refresh: bool = Query(False),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get findings with optional filters, search, and server-side pagination.
-    
+
     Returns:
         Paginated list of findings with total count and has_more flag.
     """
@@ -49,13 +53,33 @@ async def get_findings(
             logger.info(f"S3 sync completed: {message}")
         else:
             logger.warning(f"S3 sync failed or partial: {message}")
-    
+
     cluster_id_str = str(cluster_id) if cluster_id is not None else None
-    
+
+    # Client scoping (unified-schema foundation, 2026-08-20). role-client
+    # users get client_id forced server-side from their own user record --
+    # NEVER trusted from the caller-supplied query param above, which is
+    # silently ignored for that role. Other roles get it as an optional
+    # filter (None = unscoped, see everything, unchanged prior behavior).
+    effective_client_id = client_id
+    if current_user.role_id == "role-client":
+        effective_client_id = current_user.client_id
+        if not effective_client_id:
+            # Fail closed: no client assigned yet means zero findings, not
+            # an unscoped view -- matches the whole point of this change.
+            return {
+                "findings": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit,
+                "has_more": False,
+            }
+
     total = data_service.count_findings(
         severity=severity, data_source=data_source,
         cluster_id=cluster_id_str, min_anomaly_score=min_anomaly_score,
         status=status, search_query=search,
+        client_id=effective_client_id,
     )
     findings = data_service.get_findings(
         limit=limit, offset=offset,
@@ -63,8 +87,9 @@ async def get_findings(
         cluster_id=cluster_id_str, min_anomaly_score=min_anomaly_score,
         status=status, search_query=search,
         sort_by=sort_by, sort_order=sort_order,
+        client_id=effective_client_id,
     )
-    
+
     return {
         "findings": findings,
         "total": total,
@@ -479,7 +504,7 @@ Respond ONLY with valid JSON. Be specific and actionable. Focus on helping a SOC
             None,
             lambda: claude_service.chat(
                 message=prompt,
-                model="claude-sonnet-4-20250514",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=4096
             )
         )

@@ -155,7 +155,8 @@ class DatabaseDataService:
         severity: Optional[str] = None, data_source: Optional[str] = None,
         cluster_id: Optional[str] = None, min_anomaly_score: Optional[float] = None,
         status: Optional[str] = None, search_query: Optional[str] = None,
-        sort_by: str = "timestamp", sort_order: str = "desc"
+        sort_by: str = "timestamp", sort_order: str = "desc",
+        client_id: Optional[str] = None,
     ) -> List[Dict]:
         if self._demo_mode and self._demo_service:
             return self._demo_service.get_findings(limit)
@@ -167,6 +168,7 @@ class DatabaseDataService:
                     status=status, search_query=search_query,
                     limit=limit, offset=offset,
                     sort_by=sort_by, sort_order=sort_order,
+                    client_id=client_id,
                 )
                 return [f.to_dict() for f in findings]
             except Exception as e:
@@ -184,6 +186,12 @@ class DatabaseDataService:
                 findings = [f for f in findings if f.get('anomaly_score', 0) >= min_anomaly_score]
             if status:
                 findings = [f for f in findings if f.get('status') == status]
+            if client_id is not None:
+                # JSON-fallback/demo mode: client_id won't reliably be
+                # populated here (ingestion-time resolution is a real-DB
+                # concern), so this filter is a no-op-ish best-effort match,
+                # not a real scoping guarantee -- known, acceptable limit.
+                findings = [f for f in findings if f.get('client_id') == client_id]
             if search_query:
                 q = search_query.lower()
                 findings = [f for f in findings if (
@@ -200,6 +208,7 @@ class DatabaseDataService:
         self, severity: Optional[str] = None, data_source: Optional[str] = None,
         cluster_id: Optional[str] = None, min_anomaly_score: Optional[float] = None,
         status: Optional[str] = None, search_query: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> int:
         if self._demo_mode and self._demo_service:
             return len(self._demo_service.get_findings(10000))
@@ -209,6 +218,7 @@ class DatabaseDataService:
                     severity=severity, data_source=data_source,
                     cluster_id=cluster_id, min_anomaly_score=min_anomaly_score,
                     status=status, search_query=search_query,
+                    client_id=client_id,
                 )
             except Exception as e:
                 logger.error(f"Error counting findings from DB: {e}")
@@ -225,6 +235,8 @@ class DatabaseDataService:
                 findings = [f for f in findings if f.get('anomaly_score', 0) >= min_anomaly_score]
             if status:
                 findings = [f for f in findings if f.get('status') == status]
+            if client_id is not None:
+                findings = [f for f in findings if f.get('client_id') == client_id]
             if search_query:
                 q = search_query.lower()
                 findings = [f for f in findings if (
@@ -251,7 +263,62 @@ class DatabaseDataService:
                 if f.get('finding_id') == finding_id:
                     return f
         return None
-    
+
+    def upsert_task_state(
+        self,
+        finding_id: str,
+        status: str,
+        stage: Optional[str] = None,
+        error: Optional[str] = None,
+        increment_attempts: bool = False,
+    ) -> bool:
+        """Finding-processing checkpoint (daemon/processor.py). No-ops in
+        JSON-fallback/demo mode -- crash-resume is a real-DB-only concern,
+        never a reason to fail processing itself."""
+        if not self._db_available:
+            return False
+        try:
+            return self._db_service.upsert_task_state(
+                finding_id, status, stage=stage, error=error,
+                increment_attempts=increment_attempts,
+            )
+        except Exception as e:
+            logger.error(f"Error upserting task state for {finding_id}: {e}")
+            return False
+
+    def get_stuck_task_states(self, limit: int = 500) -> List[Dict]:
+        """Findings left in_progress when the daemon last stopped, for the
+        startup recovery scan in daemon/main.py."""
+        if not self._db_available:
+            return []
+        try:
+            rows = self._db_service.get_stuck_task_states(limit=limit)
+            return [r.to_dict() for r in rows]
+        except Exception as e:
+            logger.error(f"Error fetching stuck task states: {e}")
+            return []
+
+    def get_task_state_counts(self) -> Dict:
+        """Admin-UI summary tiles for the crash-resume checkpoint table."""
+        if not self._db_available:
+            return {"pending": 0, "in_progress": 0, "completed": 0, "failed": 0}
+        try:
+            return self._db_service.get_task_state_counts()
+        except Exception as e:
+            logger.error(f"Error fetching task state counts: {e}")
+            return {"pending": 0, "in_progress": 0, "completed": 0, "failed": 0}
+
+    def list_task_states(self, status: Optional[str] = None, limit: int = 100) -> List[Dict]:
+        """Admin-UI detail table -- any status, not just in_progress."""
+        if not self._db_available:
+            return []
+        try:
+            rows = self._db_service.list_task_states(status=status, limit=limit)
+            return [r.to_dict() for r in rows]
+        except Exception as e:
+            logger.error(f"Error listing task states: {e}")
+            return []
+
     def get_nearest_neighbors(self, finding_id: str, limit: int = 10) -> Dict:
         """Find similar findings using embedding-based cosine similarity.
         
@@ -323,7 +390,8 @@ class DatabaseDataService:
                     evidence_links=finding_data.get('evidence_links'),
                     cluster_id=finding_data.get('cluster_id'),
                     severity=finding_data.get('severity'),
-                    status=finding_data.get('status', 'new')
+                    status=finding_data.get('status', 'new'),
+                    client_id=finding_data.get('client_id')
                 )
                 return finding.to_dict() if finding else None
             except Exception as e:

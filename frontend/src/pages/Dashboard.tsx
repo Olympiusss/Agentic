@@ -23,18 +23,21 @@ import {
   Warning as WarningIcon,
   Folder as FolderIcon,
   Refresh as RefreshIcon,
-  FileDownload as ExportIcon,
   Timeline as TimelineIcon,
   FilterList as FilterIcon,
   Shield as ShieldIcon,
 } from '@mui/icons-material'
 import { findingsApi, casesApi, configApi, timelineApi, graphApi } from '../services/api'
+import { useSelectedClient } from '../contexts/SelectedClientContext'
 import FindingsTable from '../components/findings/FindingsTable'
 import AttackChart from '../components/attack/AttackChart'
 import ExportToTimesketchDialog from '../components/timesketch/ExportToTimesketchDialog'
 import EventTimeline from '../components/timeline/EventTimeline'
 import EntityVisualization from '../components/graph/EntityVisualization'
 import { StatCard, SearchInput } from '../components/ui'
+import SentinelOneOverview from '../components/dashboard/SentinelOneOverview'
+import StrategicInsights from '../components/dashboard/StrategicInsights'
+import ClientDetail from '../components/dashboard/ClientDetail'
 import { severityColors } from '../theme'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -67,6 +70,7 @@ export default function Dashboard() {
   const [showFilters, setShowFilters] = useState(false)
   const theme = useTheme()
   const { user } = useAuth()
+  const { selectedClient } = useSelectedClient()
   const [timelineEvents, setTimelineEvents] = useState<any[]>([])
 
   // --- Dynamic greeting - auto-detects user + client from auth context ---
@@ -139,27 +143,10 @@ export default function Dashboard() {
     loadStats()
   }
 
-  const handleExport = async () => {
-    try {
-      const response = await findingsApi.export('json')
-      const blob = new Blob([JSON.stringify(response.data, null, 2)], { type: 'application/json' })
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `findings_export_${new Date().toISOString().split('T')[0]}.json`
-      document.body.appendChild(a)
-      a.click()
-      window.URL.revokeObjectURL(url)
-      document.body.removeChild(a)
-      setSnackbar({ open: true, message: 'Findings exported successfully', severity: 'success' })
-    } catch {
-      setSnackbar({ open: true, message: 'Export failed', severity: 'error' })
-    }
-  }
-
   const handleExportToTimesketch = async () => {
     try {
       const params: any = { ...filters }
+      if (selectedClient?.client_id) params.client_id = selectedClient.client_id
       Object.keys(params).forEach(key => {
         if (!params[key]) delete params[key]
       })
@@ -291,6 +278,10 @@ export default function Dashboard() {
           )}
         </Box>
       </Box>
+
+      <ClientDetail />
+      <StrategicInsights />
+      <SentinelOneOverview />
 
       <Grid container spacing={2} sx={{ mb: 3 }}>
         <Grid item xs={12} sm={6} md={3}>

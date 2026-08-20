@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 
-from database.models import Case, Finding, SketchMapping, AttackLayer, AIDecisionLog, case_findings
+from database.models import Case, Finding, SketchMapping, AttackLayer, AIDecisionLog, LLMJobDeadLetter, AgentTaskState, case_findings
 from database.connection import get_db_manager
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,8 @@ class DatabaseService:
                     evidence_links=kwargs.get('evidence_links'),
                     cluster_id=kwargs.get('cluster_id'),
                     severity=kwargs.get('severity'),
-                    status=kwargs.get('status', 'new')
+                    status=kwargs.get('status', 'new'),
+                    client_id=kwargs.get('client_id')
                 )
                 session.add(finding)
                 session.flush()
@@ -109,10 +110,11 @@ class DatabaseService:
         offset: int = 0,
         sort_by: str = "timestamp",
         sort_order: str = "desc",
+        client_id: Optional[str] = None,
     ) -> List[Finding]:
         """
         Get findings with optional filters, search, and pagination.
-        
+
         Args:
             severity: Filter by severity
             data_source: Filter by data source
@@ -124,14 +126,18 @@ class DatabaseService:
             offset: Offset for pagination
             sort_by: Column to sort by (timestamp, anomaly_score, severity)
             sort_order: Sort direction (asc, desc)
-        
+            client_id: Filter by client (unified-schema foundation, 2026-08-20).
+                Callers enforcing role-client scoping must derive this from the
+                authenticated user server-side -- see backend/api/findings.py --
+                never from a caller-supplied value for that role.
+
         Returns:
             List of Finding objects
         """
         try:
             with self.db_manager.session_scope() as session:
                 query = select(Finding)
-                
+
                 filters = []
                 if severity:
                     filters.append(Finding.severity == severity)
@@ -143,6 +149,8 @@ class DatabaseService:
                     filters.append(Finding.anomaly_score >= min_anomaly_score)
                 if status:
                     filters.append(Finding.status == status)
+                if client_id is not None:
+                    filters.append(Finding.client_id == client_id)
                 if search_query:
                     from sqlalchemy import cast, String
                     search_clauses = [
@@ -189,6 +197,7 @@ class DatabaseService:
         min_anomaly_score: Optional[float] = None,
         status: Optional[str] = None,
         search_query: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> int:
         """
         Count findings matching the given filters without loading rows.
@@ -208,6 +217,8 @@ class DatabaseService:
                     filters.append(Finding.anomaly_score >= min_anomaly_score)
                 if status:
                     filters.append(Finding.status == status)
+                if client_id is not None:
+                    filters.append(Finding.client_id == client_id)
                 if search_query:
                     from sqlalchemy import cast, String
                     filters.append(
@@ -716,7 +727,69 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error submitting AI decision feedback: {e}")
             return None
-    
+
+    def record_decision_action(
+        self,
+        decision_id: str,
+        decision_action: str,
+        reviewer: str,
+        reason_code: Optional[str] = None,
+        fields_changed: Optional[dict] = None,
+        comment: Optional[str] = None,
+        linked_case_id: Optional[str] = None,
+    ) -> Optional[AIDecisionLog]:
+        """
+        Record a live approve/modify/override/escalate action an analyst
+        took on an AI decision (unified-schema foundation, Phase 2,
+        2026-08-20). Kept separate from submit_ai_decision_feedback()
+        above -- that's the retrospective agree/partial/disagree grading
+        flow (a different semantic axis: "was the AI right in hindsight"
+        vs. "what did the analyst do about it right now").
+
+        Args:
+            decision_id: Decision to act on
+            decision_action: 'approve' | 'modify' | 'override' | 'escalate'
+            reviewer: Name/ID of the analyst taking the action
+            reason_code: Required by the caller (backend/api/ai_decisions.py)
+                when decision_action is 'modify' or 'override'
+            fields_changed: Exact diff applied, for 'modify' actions --
+                {"field": {"from": ..., "to": ...}}
+            comment: Optional free-text note
+            linked_case_id: Populated when an 'escalate' action creates a
+                real case
+
+        Returns:
+            Updated AIDecisionLog or None if failed
+        """
+        try:
+            with self.db_manager.session_scope() as session:
+                decision = session.query(AIDecisionLog).filter(
+                    AIDecisionLog.decision_id == decision_id
+                ).first()
+
+                if not decision:
+                    logger.error(f"AI decision not found: {decision_id}")
+                    return None
+
+                decision.decision_action = decision_action
+                decision.reason_code = reason_code
+                decision.fields_changed = fields_changed
+                decision.linked_case_id = linked_case_id
+                decision.human_reviewer = reviewer
+                if comment is not None:
+                    decision.feedback_comment = comment
+                decision.feedback_timestamp = datetime.utcnow()
+
+                session.flush()
+
+                logger.info(
+                    f"Recorded decision action: {decision_id} -> {decision_action} by {reviewer}"
+                )
+                return decision
+        except Exception as e:
+            logger.error(f"Error recording decision action: {e}")
+            return None
+
     def get_ai_decision(self, decision_id: str) -> Optional[AIDecisionLog]:
         """
         Get an AI decision by ID.
@@ -787,6 +860,119 @@ class DatabaseService:
             logger.error(f"Error listing AI decisions: {e}")
             return []
     
+    def list_llm_dead_letters(
+        self,
+        finding_id: Optional[str] = None,
+        investigation_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[LLMJobDeadLetter]:
+        """List LLM jobs that exhausted their retry budget (services/llm_worker.py's
+        _write_dead_letter). Support-workflow discoverability -- lets an
+        operator see failed background LLM jobs without SSH/log-grepping.
+        See database/init/17_llm_job_dead_letters.sql."""
+        try:
+            with self.db_manager.session_scope() as session:
+                query = session.query(LLMJobDeadLetter)
+
+                if finding_id:
+                    query = query.filter(LLMJobDeadLetter.finding_id == finding_id)
+
+                if investigation_id:
+                    query = query.filter(LLMJobDeadLetter.investigation_id == investigation_id)
+
+                return query.order_by(
+                    LLMJobDeadLetter.failed_at.desc()
+                ).limit(limit).offset(offset).all()
+        except Exception as e:
+            logger.error(f"Error listing LLM dead letters: {e}")
+            return []
+
+    def upsert_task_state(
+        self,
+        finding_id: str,
+        status: str,
+        stage: Optional[str] = None,
+        error: Optional[str] = None,
+        increment_attempts: bool = False,
+    ) -> bool:
+        """Write a finding-processing checkpoint (daemon/processor.py).
+        Best-effort: a checkpoint failure must never block processing
+        itself, so callers should treat a False return as log-and-continue,
+        not a reason to abort. See database/init/18_agent_task_state.sql."""
+        try:
+            with self.db_manager.session_scope() as session:
+                row = session.get(AgentTaskState, finding_id)
+                if row is None:
+                    row = AgentTaskState(finding_id=finding_id, attempts=0)
+                    session.add(row)
+                row.status = status
+                if stage is not None:
+                    row.stage = stage
+                if error is not None:
+                    row.last_error = error
+                if increment_attempts:
+                    row.attempts = (row.attempts or 0) + 1
+                row.updated_at = datetime.utcnow()
+                return True
+        except Exception as e:
+            logger.error(f"Error upserting task state for {finding_id}: {e}")
+            return False
+
+    def get_stuck_task_states(self, limit: int = 500) -> List[AgentTaskState]:
+        """Findings left `in_progress` when the daemon last stopped --
+        scanned on startup (daemon/main.py) to resume processing rather
+        than silently leaving them incomplete forever."""
+        try:
+            with self.db_manager.session_scope() as session:
+                return (
+                    session.query(AgentTaskState)
+                    .filter(AgentTaskState.status == "in_progress")
+                    .order_by(AgentTaskState.updated_at.asc())
+                    .limit(limit)
+                    .all()
+                )
+        except Exception as e:
+            logger.error(f"Error fetching stuck task states: {e}")
+            return []
+
+    def get_task_state_counts(self) -> dict:
+        """Row counts by status -- the admin-UI summary tiles for
+        agent_task_state (frontend/src/components/settings/RuntimeHealthPanel.tsx)."""
+        try:
+            with self.db_manager.session_scope() as session:
+                rows = (
+                    session.query(AgentTaskState.status, func.count(AgentTaskState.finding_id))
+                    .group_by(AgentTaskState.status)
+                    .all()
+                )
+                counts = {"pending": 0, "in_progress": 0, "completed": 0, "failed": 0}
+                counts.update({status: count for status, count in rows})
+                return counts
+        except Exception as e:
+            logger.error(f"Error fetching task state counts: {e}")
+            return {"pending": 0, "in_progress": 0, "completed": 0, "failed": 0}
+
+    def list_task_states(
+        self, status: Optional[str] = None, limit: int = 100
+    ) -> List[AgentTaskState]:
+        """General-purpose read for the admin UI -- unlike
+        get_stuck_task_states() (hardcoded to in_progress, used by the
+        crash-resume scan), this takes any status filter."""
+        try:
+            with self.db_manager.session_scope() as session:
+                query = session.query(AgentTaskState)
+                if status:
+                    query = query.filter(AgentTaskState.status == status)
+                return (
+                    query.order_by(AgentTaskState.updated_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+        except Exception as e:
+            logger.error(f"Error listing task states: {e}")
+            return []
+
     def get_ai_decision_stats(
         self,
         agent_id: Optional[str] = None,

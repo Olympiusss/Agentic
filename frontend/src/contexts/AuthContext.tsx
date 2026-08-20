@@ -5,8 +5,13 @@
  * Supports DEV_MODE for bypassing authentication during development.
  */
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import api from '../services/api';
+
+// Idle-timeout auto-logout (post-Phase-2): 5 minutes of no user activity
+// anywhere in the app logs the session out.
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const ACTIVITY_EVENTS = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart'] as const;
 
 // Dev mode flag - reads from Vite environment variable
 const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
@@ -63,6 +68,9 @@ interface User {
   full_name: string;
   organisation?: string;   // client / company name shown in greeting
   role_id: string;
+  // Unified-schema foundation, 2026-08-20: the real clients.client_id this
+  // user is scoped to (role-client users only; null for internal users).
+  client_id?: string | null;
   is_active: boolean;
   is_verified: boolean;
   mfa_enabled: boolean;
@@ -71,19 +79,17 @@ interface User {
   permissions?: Record<string, boolean>;
 }
 
-// Demo users (login works even without a running backend)
-const ALL_PERMISSIONS: Record<string, boolean> = {
-  'findings.read': true, 'findings.write': true, 'findings.delete': true,
-  'cases.read': true,    'cases.write': true,    'cases.delete': true,
-  'cases.assign': true,  'integrations.read': true, 'integrations.write': true,
-  'users.read': true,    'users.write': true,    'users.delete': true,
-  'settings.read': true, 'settings.write': true, 'config.write': true,
-  'ai_chat.use': true,   'ai_decisions.approve': true,
-};
-
 // NOTE: Demo fallback removed — all auth goes through the real backend.
 // Credentials: admin / SentryAdmin2024!
 
+// Fresh-login-means-fresh-chat (post-Phase-2, superseded). Originally
+// implemented here as a synchronous localStorage rewrite the instant login
+// succeeded, working around a mount-order race in ClaudeDrawer. That race
+// no longer matters: ClaudeDrawer's own loadPersistedData() now always
+// starts a normal open (no explicit Chats-History tab request) on a single
+// fresh tab, never the restored archive, on every mount -- not just the
+// one right after login. Nothing to do here anymore; login() below no
+// longer touches claudeDrawerTabs at all.
 
 interface AuthContextType {
   user: User | null;
@@ -145,6 +151,30 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return () => clearInterval(interval);
   }, [user]);
 
+  // Idle-timeout auto-logout (post-Phase-2): resets on any real user
+  // activity; if none occurs for IDLE_TIMEOUT_MS, log out automatically.
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!user) return;
+
+    const resetIdleTimer = () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(() => {
+        console.log('Idle timeout reached — logging out');
+        logout();
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    resetIdleTimer();
+    ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, resetIdleTimer, { passive: true }));
+
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      ACTIVITY_EVENTS.forEach(evt => window.removeEventListener(evt, resetIdleTimer));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
   const login = async (usernameOrEmail: string, password: string, mfaCode?: string) => {
     // DEV MODE: Skip actual login and use mock user
     if (DEV_MODE) {
@@ -165,6 +195,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
       // Call /auth/me to get the full user object with permissions attached.
       const meResponse = await api.get('/auth/me');
       setUser(meResponse.data);
+      // A fresh login always starts a brand-new chat tab instead of
+      // restoring whatever was last active (with its old token count) --
+      // confirmed behavior. Old conversations aren't lost, just not
+      // auto-resumed -- reachable via Chats History. Enforced by
+      // ClaudeDrawer's loadPersistedData() on every mount, not here.
     } catch (error: any) {
       const isMfaRequired =
         error.response?.headers?.['x-mfa-required'] === 'true' ||

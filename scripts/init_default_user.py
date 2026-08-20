@@ -124,6 +124,15 @@ def init_default_user():
             session.execute(text(
                 "ALTER TABLE users ALTER COLUMN login_count SET DEFAULT 0"
             ))
+            # Client scoping (unified-schema foundation, 2026-08-20). No FK
+            # here deliberately -- this script may run before the `clients`
+            # table exists (init-order-independent, same reasoning as
+            # database/init/19_clients.sql); a real FK for already-
+            # provisioned databases is added via scripts/migrate_schema.py,
+            # which controls its own step ordering.
+            session.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)"
+            ))
             
             # Check if default admin user already exists
             result = session.execute(

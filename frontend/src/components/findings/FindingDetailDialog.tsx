@@ -26,9 +26,9 @@ import {
   AccordionSummary,
   AccordionDetails,
 } from '@mui/material'
-import { 
-  Close as CloseIcon, 
-  Save as SaveIcon, 
+import {
+  Close as CloseIcon,
+  Save as SaveIcon,
   Psychology as AiIcon,
   ExpandMore as ExpandMoreIcon,
   CheckCircle as CheckCircleIcon,
@@ -36,12 +36,19 @@ import {
   Info as InfoIcon,
   Timeline as TimelineIcon,
   Security as SecurityIcon,
+  ThumbUp as ApproveIcon,
+  EditNote as ModifyIcon,
+  Flag as OverrideIcon,
+  TrendingUp as EscalateIcon,
 } from '@mui/icons-material'
-import { findingsApi, timelineApi } from '../../services/api'
+import { findingsApi, timelineApi, aiDecisionsApi, DECISION_REASON_CODES } from '../../services/api'
+import { useAuth } from '../../contexts/AuthContext'
 import EventTimeline from '../timeline/EventTimeline'
 import EventVisualizationDialog from '../timeline/EventVisualizationDialog'
 import NetworkContextPanel from './NetworkContextPanel'
 import { VStrikeEnrichment } from '../../types/vstrike'
+
+type DecisionActionType = 'approve' | 'modify' | 'override' | 'escalate'
 
 interface FindingDetailDialogProps {
   open: boolean
@@ -73,13 +80,124 @@ export default function FindingDetailDialog({
     severity: 'success',
   })
 
+  // Decision Panel (unified-schema foundation, Phase 2, 2026-08-20):
+  // approve/modify/override/escalate on this finding's most recent AI
+  // decision (typically the synergy pipeline's "zeus_pipeline" verdict).
+  const { user } = useAuth()
+  const [decisions, setDecisions] = useState<any[]>([])
+  const [decisionsLoading, setDecisionsLoading] = useState(false)
+  const [actionDialogOpen, setActionDialogOpen] = useState(false)
+  const [pendingAction, setPendingAction] = useState<DecisionActionType | null>(null)
+  const [reasonCode, setReasonCode] = useState('')
+  const [actionComment, setActionComment] = useState('')
+  const [escalateTo, setEscalateTo] = useState('')
+  const [submittingAction, setSubmittingAction] = useState(false)
+
   useEffect(() => {
     if (open && findingId) {
       loadFinding()
       loadEnrichment()
       loadTimeline()
+      loadDecisions()
     }
   }, [open, findingId])
+
+  const loadDecisions = async () => {
+    if (!findingId) return
+    setDecisionsLoading(true)
+    try {
+      const response = await aiDecisionsApi.list({ finding_id: findingId, limit: 10 })
+      setDecisions(response.data || [])
+    } catch (error) {
+      console.error('Failed to load AI decisions:', error)
+    } finally {
+      setDecisionsLoading(false)
+    }
+  }
+
+  // Most recent decision for this finding -- the one the Decision Panel
+  // acts on. Findings processed through capabilities/synergy.py will
+  // have one logged under agent_id "zeus_pipeline".
+  const latestDecision = decisions.length > 0
+    ? [...decisions].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+    : null
+
+  const openActionDialog = (action: DecisionActionType) => {
+    setPendingAction(action)
+    setReasonCode('')
+    setActionComment('')
+    setEscalateTo('')
+    setActionDialogOpen(true)
+  }
+
+  const handleApprove = async () => {
+    if (!latestDecision) return
+    setSubmittingAction(true)
+    try {
+      await aiDecisionsApi.submitAction(latestDecision.decision_id, {
+        decision_action: 'approve',
+        reviewer: user?.username || user?.full_name || 'analyst',
+      })
+      setSnackbar({ open: true, message: 'Decision approved', severity: 'success' })
+      loadDecisions()
+      if (onUpdate) onUpdate()
+    } catch (error: any) {
+      setSnackbar({
+        open: true,
+        message: error?.response?.data?.detail || 'Failed to approve decision',
+        severity: 'error',
+      })
+    } finally {
+      setSubmittingAction(false)
+    }
+  }
+
+  const submitPendingAction = async () => {
+    if (!latestDecision || !pendingAction) return
+    if (pendingAction !== 'approve' && !reasonCode) return
+
+    setSubmittingAction(true)
+    try {
+      let fieldsChanged: Record<string, { from: any; to: any }> | undefined
+      if (pendingAction === 'modify' && editedFinding && finding) {
+        fieldsChanged = {}
+        for (const key of ['severity', 'status', 'description']) {
+          if (editedFinding[key] !== finding[key]) {
+            fieldsChanged[key] = { from: finding[key], to: editedFinding[key] }
+          }
+        }
+        if (Object.keys(fieldsChanged).length === 0) fieldsChanged = undefined
+      }
+
+      await aiDecisionsApi.submitAction(latestDecision.decision_id, {
+        decision_action: pendingAction,
+        reviewer: user?.username || user?.full_name || 'analyst',
+        reason_code: reasonCode || undefined,
+        fields_changed: fieldsChanged,
+        comment: actionComment || undefined,
+        escalate_to: pendingAction === 'escalate' ? (escalateTo || undefined) : undefined,
+      })
+
+      setSnackbar({
+        open: true,
+        message: pendingAction === 'escalate' ? 'Escalated -- case created' : `Decision ${pendingAction}d`,
+        severity: 'success',
+      })
+      setActionDialogOpen(false)
+      setEditing(false)
+      loadDecisions()
+      loadFinding()
+      if (onUpdate) onUpdate()
+    } catch (error: any) {
+      setSnackbar({
+        open: true,
+        message: error?.response?.data?.detail || `Failed to ${pendingAction} decision`,
+        severity: 'error',
+      })
+    } finally {
+      setSubmittingAction(false)
+    }
+  }
 
   const loadFinding = async () => {
     if (!findingId) return
@@ -713,9 +831,148 @@ export default function FindingDetailDialog({
                 </Alert>
               )}
             </Grid>
+
+            {/* Decision Panel (unified-schema foundation, Phase 2,
+                2026-08-20): approve/modify/override/escalate this
+                finding's most recent AI decision. */}
+            <Grid item xs={12}>
+              <Divider sx={{ my: 2 }} />
+              <Box display="flex" alignItems="center" mb={1}>
+                <CheckCircleIcon sx={{ mr: 1, color: 'primary.main' }} />
+                <Typography variant="h6" color="primary">
+                  Decision Panel
+                </Typography>
+              </Box>
+              {decisionsLoading ? (
+                <CircularProgress size={20} />
+              ) : !latestDecision ? (
+                <Alert severity="info">
+                  No AI decision recorded for this finding yet -- nothing to act on.
+                </Alert>
+              ) : (
+                <Box>
+                  <Paper elevation={2} sx={{ p: 2, mb: 2, bgcolor: 'background.default' }}>
+                    <Typography variant="caption" color="textSecondary">
+                      {latestDecision.agent_id} &middot; confidence {Math.round((latestDecision.confidence_score || 0) * 100)}%
+                      {latestDecision.decision_action && (
+                        <> &middot; already <strong>{latestDecision.decision_action}d</strong> by {latestDecision.human_reviewer}</>
+                      )}
+                    </Typography>
+                    <Typography variant="body2" sx={{ mt: 1 }}>{latestDecision.reasoning}</Typography>
+                    <Typography variant="body2" sx={{ mt: 1 }}>
+                      <strong>Recommended:</strong> {latestDecision.recommended_action}
+                    </Typography>
+                  </Paper>
+                  <Box display="flex" gap={1} flexWrap="wrap">
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="success"
+                      startIcon={<ApproveIcon />}
+                      disabled={submittingAction}
+                      onClick={handleApprove}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<ModifyIcon />}
+                      disabled={submittingAction}
+                      onClick={() => {
+                        if (!editing) setEditing(true)
+                        openActionDialog('modify')
+                      }}
+                    >
+                      Modify
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="warning"
+                      startIcon={<OverrideIcon />}
+                      disabled={submittingAction}
+                      onClick={() => openActionDialog('override')}
+                    >
+                      Override
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      startIcon={<EscalateIcon />}
+                      disabled={submittingAction}
+                      onClick={() => openActionDialog('escalate')}
+                    >
+                      Escalate
+                    </Button>
+                  </Box>
+                  {pendingAction === 'modify' && actionDialogOpen === false && editing && (
+                    <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 1 }}>
+                      Edit the fields above, then click Modify again to confirm with a reason.
+                    </Typography>
+                  )}
+                </Box>
+              )}
+            </Grid>
           </Grid>
         ) : null}
       </DialogContent>
+
+      {/* Decision action dialog -- reason code (required for
+          modify/override), optional comment, assignee for escalate.
+          Mirrors AIDecisions.tsx's existing Pending-Approvals reject
+          dialog pattern (required reason, disabled-until-valid submit). */}
+      <Dialog open={actionDialogOpen} onClose={() => setActionDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ textTransform: 'capitalize' }}>{pendingAction} Decision</DialogTitle>
+        <DialogContent>
+          {pendingAction === 'modify' && (!editedFinding || !finding || JSON.stringify(editedFinding) === JSON.stringify(finding)) && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              No changes detected yet. Edit a field (severity, status, description) above first.
+            </Alert>
+          )}
+          <FormControl fullWidth size="small" sx={{ mt: 1, mb: 2 }}>
+            <Typography variant="caption" color="textSecondary" sx={{ mb: 0.5 }}>
+              Reason {pendingAction !== 'approve' && '(required)'}
+            </Typography>
+            <Select value={reasonCode} onChange={(e) => setReasonCode(e.target.value)} displayEmpty>
+              <MenuItem value=""><em>Select a reason</em></MenuItem>
+              {DECISION_REASON_CODES.map((code) => (
+                <MenuItem key={code} value={code}>{code.replace(/_/g, ' ')}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {pendingAction === 'escalate' && (
+            <TextField
+              fullWidth
+              size="small"
+              label="Assign to (optional)"
+              value={escalateTo}
+              onChange={(e) => setEscalateTo(e.target.value)}
+              sx={{ mb: 2 }}
+            />
+          )}
+          <TextField
+            fullWidth
+            multiline
+            minRows={2}
+            size="small"
+            label="Comment (optional)"
+            value={actionComment}
+            onChange={(e) => setActionComment(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setActionDialogOpen(false)} disabled={submittingAction}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={submittingAction || !reasonCode}
+            onClick={submitPendingAction}
+          >
+            {submittingAction ? <CircularProgress size={18} /> : 'Confirm'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <DialogActions>
         <Box display="flex" justifyContent="space-between" width="100%">
