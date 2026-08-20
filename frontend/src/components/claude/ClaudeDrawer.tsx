@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import {
   Drawer,
   Box,
@@ -13,6 +13,7 @@ import {
   FormControl,
   Select,
   MenuItem,
+  Menu,
   Chip,
   LinearProgress,
   List,
@@ -39,15 +40,15 @@ import {
   Delete as DeleteIcon,
   CheckCircle as CheckCircleIcon,
   Error as ErrorIcon,
-  PictureAsPdf as PdfIcon,
   Info as InfoIcon,
   Refresh as RefreshIcon,
   Compress as CompressIcon,
   Warning as WarningIcon,
-  Psychology as ReasoningIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
-  FileDownload as ExportIcon,
+  Save as SaveIcon,
+  Edit as EditIcon,
+  Check as CheckIcon,
 } from '@mui/icons-material'
 import {
   claudeApi,
@@ -59,25 +60,37 @@ import {
 } from '../../services/api'
 import { notificationService } from '../../services/notifications'
 import { createLogger } from '../../services/logger'
+import { useAuth } from '../../contexts/AuthContext'
 
 const logger = createLogger('ClaudeDrawer')
 
-interface ContentBlock {
+export interface ContentBlock {
   type: 'text' | 'image' | 'thinking'
   text?: string
   source?: { type: 'base64'; media_type: string; data: string }
 }
 
-interface Message {
+export interface Message {
   role: 'user' | 'assistant'
   content: string | ContentBlock[]
+  // Per-message token usage (post-Phase-2): only assistant messages that
+  // actually called the model carry this -- deterministic SentinelOne
+  // recipe answers spend zero LLM tokens and legitimately have none.
+  usage?: { input_tokens: number; output_tokens: number }
 }
 
-interface ChatTab {
+export interface ChatTab {
   id: string
   title: string
   messages: Message[]
   investigationKey?: string
+  // Chats History (post-Phase-2): stamped whenever this tab's messages
+  // change. Drives both the History page's "recent" ordering and the
+  // 10-tab cap's LRU eviction.
+  lastUpdated?: number
+  // Chats History (post-Phase-2): pinned conversations are exempt from the
+  // 10-tab LRU cap and sort first in the History list.
+  isPinned?: boolean
 }
 
 interface ClaudeDrawerProps {
@@ -87,9 +100,18 @@ interface ClaudeDrawerProps {
   initialMessages?: Message[]
   initialAgentId?: string
   initialTitle?: string
+  // Prompts Repo (post-Phase-2): pre-fills a new tab's input without
+  // sending. initialDraftKey must change (parent increments a counter) for
+  // the same text to trigger a fresh tab on repeated clicks.
+  initialDraftText?: string
+  initialDraftKey?: number
+  // Chats History (post-Phase-2): open directly to this existing tab id.
+  initialActiveTabId?: string
   fullScreen?: boolean
   panelMode?: boolean       // right-side panel (not fullscreen overlay)
 }
+
+const MAX_HISTORY_TABS = 10
 
 interface Agent {
   id: string
@@ -107,9 +129,10 @@ interface AttachedFile {
   media_type?: string
 }
 
-export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessages, initialAgentId, initialTitle, fullScreen = false, panelMode = false }: ClaudeDrawerProps) {
+export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessages, initialAgentId, initialTitle, initialDraftText, initialDraftKey, initialActiveTabId, fullScreen = false, panelMode = false }: ClaudeDrawerProps) {
   const theme = useTheme()
-  
+  const { user } = useAuth()
+
   const stripThinkingBlocks = (messages: Message[]): Message[] => {
     return messages.map(msg => {
       if (msg.role === 'assistant' && Array.isArray(msg.content)) {
@@ -122,16 +145,31 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
   }
 
   const loadPersistedData = () => {
-    try {
-      const savedTabs = localStorage.getItem('claudeDrawerTabs')
-      const savedTab = localStorage.getItem('claudeDrawerCurrentTab')
-      if (savedTabs) {
-        const parsed = JSON.parse(savedTabs)
-        // Don't filter out thinking blocks - preserve them so they can be displayed
-        return { tabs: parsed, currentTab: savedTab ? parseInt(savedTab, 10) : 0 }
-      }
-    } catch { /* Ignore localStorage errors */ }
-    return { tabs: [{ id: '1', title: 'Chat 1', messages: [] }], currentTab: 0 }
+    // Chats History (post-Phase-2): if asked to open a specific saved tab,
+    // jump straight to it -- the one deliberate way to bring a previous
+    // conversation back into the tab bar.
+    if (initialActiveTabId) {
+      try {
+        const savedTabs = localStorage.getItem('claudeDrawerTabs')
+        if (savedTabs) {
+          const parsed = JSON.parse(savedTabs)
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const idx = parsed.findIndex((t: ChatTab) => t.id === initialActiveTabId)
+            if (idx !== -1) return { tabs: parsed, currentTab: idx }
+          }
+        }
+      } catch { /* Ignore localStorage errors, fall through to a fresh tab */ }
+    }
+    // Every other open -- fresh login, reopening the drawer, a normal page
+    // reload -- always starts on exactly one new, empty tab (confirmed
+    // behavior: "It should only display a new tab and not previous chats.
+    // Previous chats can be accessed via chat history"). Previously-saved
+    // conversations are never auto-restored into the tab bar; they live
+    // untouched in claudeDrawerTabs and stay reachable only via Chats
+    // History (the branch above). The persist effect below merges into
+    // that archive rather than overwriting it wholesale, so starting fresh
+    // here never loses history.
+    return { tabs: [{ id: `${Date.now()}`, title: 'New Chat', messages: [] }], currentTab: 0 }
   }
 
   const loadPersistedSettings = () => {
@@ -161,6 +199,7 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
   const [tabs, setTabs] = useState<ChatTab[]>(persisted.tabs)
   const [currentTab, setCurrentTab] = useState(persisted.currentTab)
   const [lastInvestigationId, setLastInvestigationId] = useState<string | null>(null)
+  const [lastDraftKey, setLastDraftKey] = useState<number | null>(null)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -192,18 +231,56 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
     total_input_tokens: number
     total_output_tokens: number
   } | null>(null)
-  const [traceOpen, setTraceOpen] = useState(false)
-  const [traceInteractions, setTraceInteractions] = useState<any[]>([])
-  const [traceSelected, setTraceSelected] = useState<any | null>(null)
-  const [traceLoading, setTraceLoading] = useState(false)
   const [collapsedThinking, setCollapsedThinking] = useState<Record<string, boolean>>({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  // Edit-and-resend (post-Phase-2): editing a sent message discards
+  // everything after it and re-sends the edited text as a fresh turn.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [editingText, setEditingText] = useState('')
+  // Save Chat format picker (post-Phase-2): replaces the old separate
+  // "Export chat" (.txt) button and "Generate PDF report" icon with one
+  // menu offering both.
+  const [saveMenuAnchor, setSaveMenuAnchor] = useState<HTMLElement | null>(null)
+
+  // Personalized greeting for an empty chat tab (post-Phase-2), same
+  // pattern already used on the Dashboard (frontend/src/pages/Dashboard.tsx).
+  const greeting = useMemo(() => {
+    const firstName = user?.full_name ? user.full_name.split(' ')[0] : (user?.username || 'there')
+    return `Hi ${firstName}, how may I assist you today?`
+  }, [user])
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
 
   useEffect(() => { scrollToBottom() }, [tabs, currentTab])
-  useEffect(() => { try { localStorage.setItem('claudeDrawerTabs', JSON.stringify(tabs)) } catch { /* ignore */ } }, [tabs])
-  
+  // Only persist tabs that actually hold a conversation -- an untouched
+  // "New Chat" is not a real chat, it's an open tab, and shouldn't survive
+  // a reload/re-login or show up in Chats History (confirmed behavior,
+  // post-Phase-3 fix). Since loadPersistedData() above now always starts a
+  // normal open on a single fresh tab (never the restored archive), this
+  // MERGES this session's open tabs into whatever is already archived in
+  // localStorage rather than overwriting it outright -- overwriting would
+  // wipe every previously-saved conversation the instant the drawer
+  // mounts, since a brand-new tab has zero messages. Archived tabs that
+  // aren't currently open this session survive untouched; any tab
+  // (archived or open) with zero messages is dropped, same rule as before.
+  // currentTab is re-derived against the merged list (by tab id, not raw
+  // index) so the persisted pointer never drifts.
+  useEffect(() => {
+    try {
+      const nonEmptyOpenTabs = tabs.filter(t => t.messages.length > 0)
+      const openIds = new Set(nonEmptyOpenTabs.map(t => t.id))
+      const savedRaw = localStorage.getItem('claudeDrawerTabs')
+      const archive: ChatTab[] = savedRaw ? JSON.parse(savedRaw) : []
+      const untouchedArchive = archive.filter(t => !openIds.has(t.id) && t.messages.length > 0)
+      const merged = [...untouchedArchive, ...nonEmptyOpenTabs]
+      localStorage.setItem('claudeDrawerTabs', JSON.stringify(merged))
+      const activeTab = tabs[currentTab]
+      const idxInPersisted = activeTab ? merged.findIndex(t => t.id === activeTab.id) : -1
+      const persistedCurrentTab = idxInPersisted >= 0 ? idxInPersisted : Math.max(0, merged.length - 1)
+      localStorage.setItem('claudeDrawerCurrentTab', String(persistedCurrentTab))
+    } catch { /* ignore */ }
+  }, [tabs, currentTab])
+
   // Debug logging for messages (only in development)
   useEffect(() => {
     if (tabs[currentTab] && import.meta.env.DEV) {
@@ -213,7 +290,6 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
       })
     }
   }, [tabs, currentTab])
-  useEffect(() => { try { localStorage.setItem('claudeDrawerCurrentTab', currentTab.toString()) } catch { /* ignore */ } }, [currentTab])
 
   // GH #79 — load reasoning-trace summary when switching tabs
   useEffect(() => {
@@ -228,34 +304,6 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
       }))
       .catch(() => setSessionSummary(null))
   }, [currentTab, tabs])
-
-  const openReasoningTrace = async () => {
-    const sid = tabs[currentTab]?.id
-    if (!sid) return
-    setTraceOpen(true)
-    setTraceLoading(true)
-    setTraceSelected(null)
-    try {
-      const resp = await reasoningApi.listInteractions(sid, { limit: 200 })
-      setTraceInteractions(resp.interactions || [])
-    } catch (e) {
-      logger.error('Failed to load reasoning trace', e)
-      setTraceInteractions([])
-    } finally {
-      setTraceLoading(false)
-    }
-  }
-
-  const loadTraceInteraction = async (interactionId: string) => {
-    const sid = tabs[currentTab]?.id
-    if (!sid) return
-    try {
-      const detail = await reasoningApi.getInteraction(sid, interactionId)
-      setTraceSelected(detail)
-    } catch (e) {
-      logger.error('Failed to load interaction detail', e)
-    }
-  }
 
   const toggleThinking = (key: string) => {
     setCollapsedThinking(prev => ({ ...prev, [key]: !prev[key] }))
@@ -408,6 +456,27 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
 
   useEffect(() => { if (!open) setLastInvestigationId(null) }, [open])
 
+  // Prompts Repo (post-Phase-2): open a new tab with the clicked prompt
+  // sitting in the input, unsent -- confirmed behavior, deliberately not
+  // the auto-investigation effect above's auto-send pattern. Guarded by
+  // initialDraftKey (not just initialDraftText) so clicking the identical
+  // prompt twice still opens a fresh tab rather than being treated as a
+  // no-op repeat.
+  useEffect(() => {
+    if (open && initialDraftText && initialDraftKey !== undefined && initialDraftKey !== lastDraftKey) {
+      setLastDraftKey(initialDraftKey)
+      const newTab: ChatTab = {
+        id: `draft-${Date.now()}`,
+        title: initialDraftText.length > 40 ? `${initialDraftText.slice(0, 40)}…` : initialDraftText,
+        messages: [],
+      }
+      const capped = capTabsAt10([...tabs, newTab], newTab.id)
+      setTabs(capped)
+      setCurrentTab(capped.findIndex(t => t.id === newTab.id))
+      setInput(initialDraftText)
+    }
+  }, [open, initialDraftText, initialDraftKey, lastDraftKey, tabs])
+
   // #184 Phase 2: ask the backend for an exact token count + USD estimate
   // instead of doing the math client-side. The backend uses Anthropic's
   // free count_tokens API for Anthropic models (so the number is exact,
@@ -465,46 +534,40 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const handleSend = async () => {
-    if ((!input.trim() && !attachedFiles.length) || loading) return
-    
+  // Core "append this user message to baseMessages and stream a response"
+  // logic, factored out of the old handleSend (post-Phase-2) so both a
+  // normal send and an edit-and-resend can share it instead of duplicating
+  // ~200 lines of streaming/error-handling logic. baseMessages is passed
+  // explicitly (not read from tabs state) so an edit-resend can pass an
+  // already-truncated history without a React state-timing race.
+  const sendUserMessage = async (content: string | ContentBlock[], baseMessages: Message[]) => {
     const sessionId = `${Date.now()}-${Math.random().toString(36).substring(7)}`
-    
+
     logger.send('=== OUTGOING MESSAGE ===', {
       sessionId,
-      inputLength: input.length,
-      attachedFiles: attachedFiles.length,
       model,
       selectedAgent,
       timestamp: new Date().toISOString()
     })
-    
-    let content: string | ContentBlock[]
-    if (attachedFiles.length) {
-      const blocks: ContentBlock[] = []
-      if (input.trim()) blocks.push({ type: 'text', text: input.trim() })
-      attachedFiles.forEach(f => { if (f.type === 'image' && f.media_type) blocks.push({ type: 'image', source: { type: 'base64', media_type: f.media_type, data: f.data } }) })
-      content = blocks
-    } else content = input.trim()
+
     const userMsg: Message = { role: 'user', content }
-    
+
     const newTabs = [...tabs]
     newTabs[currentTab] = {
       ...newTabs[currentTab],
-      messages: [...newTabs[currentTab].messages, userMsg]
+      messages: [...baseMessages, userMsg],
+      lastUpdated: Date.now(),
     }
-    
+
     // Strip thinking blocks from history before sending - backend/agent controls thinking
     const toSend = stripThinkingBlocks(newTabs[currentTab].messages)
-    
+
     setTabs(newTabs)
-    setInput('')
-    setAttachedFiles([])
     setLoading(true)
     setStreamingThinking('')
     setStreamingText('')
     setIsThinking(false)
-    
+
     try {
       logger.request('📤 === API REQUEST ===', {
         sessionId,
@@ -544,16 +607,17 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
       const textContent: ContentBlock[] = []
       let currentThinking = ''
       let currentText = ''
-      
+      let capturedUsage: { input_tokens: number; output_tokens: number } | null = null
+
       if (reader) {
         try {
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
-            
+
             const chunk = decoder.decode(value)
             const lines = chunk.split('\n')
-            
+
             for (const line of lines) {
               if (line.startsWith('data: ')) {
                 const data = line.slice(6)
@@ -565,9 +629,11 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
                     logger.error('Failed to parse SSE event JSON', { data, error: parseError })
                     continue
                   }
-                  
+
                   if (event.error) {
                     throw new Error(event.error)
+                  } else if (event.type === 'usage') {
+                    capturedUsage = { input_tokens: event.input_tokens, output_tokens: event.output_tokens }
                   } else if (event.type === 'context_summarized') {
                     logger.info(`Context auto-summarized: ${event.summarized_messages} older messages condensed, ${event.remaining_messages} recent messages kept`)
                     currentText += `[Context auto-summarized: ${event.summarized_messages} older messages were condensed to preserve context within the model's limits. Recent messages and all key details are preserved.]\n\n`
@@ -615,11 +681,15 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
         const updatedTabs = [...prevTabs]
         updatedTabs[currentTab] = {
           ...updatedTabs[currentTab],
-          messages: [...updatedTabs[currentTab].messages, { role: 'assistant', content: responseContent }]
+          messages: [
+            ...updatedTabs[currentTab].messages,
+            { role: 'assistant', content: responseContent, usage: capturedUsage || undefined },
+          ],
+          lastUpdated: Date.now(),
         }
         return updatedTabs
       })
-      
+
       setStreamingThinking('')
       setStreamingText('')
       setIsThinking(false)
@@ -689,8 +759,81 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
     } finally { setLoading(false) }
   }
 
+  const handleSend = async () => {
+    if ((!input.trim() && !attachedFiles.length) || loading) return
+
+    // Defensive guard, not the primary fix (that's loadPersistedData()
+    // rejecting an empty persisted array) -- if tabs is ever empty for any
+    // other reason, open a fresh tab rather than silently throwing on
+    // tabs[currentTab].messages, which previously killed handleSend before
+    // it could clear the input or send the request (looked exactly like a
+    // dead Send button, no visible error).
+    if (!tabs[currentTab]) {
+      setTabs([{ id: Date.now().toString(), title: 'Chat 1', messages: [] }])
+      setCurrentTab(0)
+      return
+    }
+
+    let content: string | ContentBlock[]
+    if (attachedFiles.length) {
+      const blocks: ContentBlock[] = []
+      if (input.trim()) blocks.push({ type: 'text', text: input.trim() })
+      attachedFiles.forEach(f => { if (f.type === 'image' && f.media_type) blocks.push({ type: 'image', source: { type: 'base64', media_type: f.media_type, data: f.data } }) })
+      content = blocks
+    } else content = input.trim()
+
+    const baseMessages = tabs[currentTab].messages
+    setInput('')
+    setAttachedFiles([])
+    await sendUserMessage(content, baseMessages)
+  }
+
+  // Edit-and-resend (post-Phase-2, confirmed behavior): editing a sent
+  // message discards it and everything after it, then re-sends the edited
+  // text as a fresh turn -- same convention as ChatGPT/Claude.ai. Only
+  // offered for plain-text messages; a multimodal (image-attached) message
+  // isn't editable through this simple text field.
+  const handleEditStart = (index: number, msg: Message) => {
+    if (typeof msg.content !== 'string' || loading) return
+    setEditingIndex(index)
+    setEditingText(msg.content)
+  }
+
+  const handleEditCancel = () => {
+    setEditingIndex(null)
+    setEditingText('')
+  }
+
+  const handleEditSave = async (index: number) => {
+    const text = editingText.trim()
+    if (!text) return
+    const baseMessages = tabs[currentTab].messages.slice(0, index)
+    setEditingIndex(null)
+    setEditingText('')
+    await sendUserMessage(text, baseMessages)
+  }
+
   const handleKeyPress = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }
-  const handleNewTab = () => { setTabs([...tabs, { id: `${Date.now()}`, title: `Chat ${tabs.length + 1}`, messages: [] }]); setCurrentTab(tabs.length) }
+  // Chats History cap (post-Phase-2, confirmed design): keep at most the 10
+  // most-recently-active conversations. Never evicts `keepId` (the tab
+  // that's about to become active) even if it's technically the oldest by
+  // timestamp (a brand-new tab has no lastUpdated yet).
+  const capTabsAt10 = (list: ChatTab[], keepId: string): ChatTab[] => {
+    if (list.length <= MAX_HISTORY_TABS) return list
+    // Pinned conversations are exempt from eviction, same as the active tab.
+    const evictable = list
+      .filter(t => t.id !== keepId && !t.isPinned)
+      .sort((a, b) => (a.lastUpdated ?? 0) - (b.lastUpdated ?? 0))
+    const toDrop = new Set(evictable.slice(0, list.length - MAX_HISTORY_TABS).map(t => t.id))
+    return list.filter(t => !toDrop.has(t.id))
+  }
+
+  const handleNewTab = () => {
+    const newTab: ChatTab = { id: `${Date.now()}`, title: `Chat ${tabs.length + 1}`, messages: [] }
+    const capped = capTabsAt10([...tabs, newTab], newTab.id)
+    setTabs(capped)
+    setCurrentTab(capped.findIndex(t => t.id === newTab.id))
+  }
   const handleCloseTab = (idx: number) => {
     // If closing the last tab, create a new empty tab first to keep drawer open
     if (tabs.length === 1) {
@@ -871,18 +1014,35 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
         }}>
           {/* Logo + Title */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2 }}>
-            <svg width="22" height="24" viewBox="0 0 120 130" fill="none" xmlns="http://www.w3.org/2000/svg">
+            {/* Same canonical logo as NavigationRail's SentryLogoSmall
+                (post-Phase-2 fix: one shared symmetric design, not two
+                drifted ones) -- equal-height bars, symmetric shield. */}
+            <svg width="22" height="24" viewBox="0 0 100 110" fill="none" xmlns="http://www.w3.org/2000/svg">
               <defs>
-                <linearGradient id="cdlg" x1="20" y1="0" x2="100" y2="130" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stopColor="#5BA4FF" />
-                  <stop offset="100%" stopColor="#1A3FCC" />
+                <linearGradient id="cdlg-grad" x1="15" y1="0" x2="85" y2="110" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stopColor="#2D6FFF" />
+                  <stop offset="45%" stopColor="#1A4FE8" />
+                  <stop offset="100%" stopColor="#0A1E7A" />
                 </linearGradient>
+                <linearGradient id="cdlg-gloss" x1="10" y1="0" x2="60" y2="50" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stopColor="rgba(255,255,255,0.38)" />
+                  <stop offset="100%" stopColor="rgba(255,255,255,0)" />
+                </linearGradient>
+                <clipPath id="cdlg-clip">
+                  <path d="M50 4 L90 20 L90 60 Q90 90 50 106 Q10 90 10 60 L10 20 Z" />
+                </clipPath>
               </defs>
-              <path d="M60 4C60 4 10 22 10 58L10 78C10 108 60 126 60 126C60 126 110 108 110 78L110 58C110 22 60 4 60 4Z" fill="url(#cdlg)" />
-              <path d="M60 4C60 4 10 22 10 58L10 68C35 50 85 50 110 68L110 58C110 22 60 4 60 4Z" fill="rgba(255,255,255,0.18)" />
-              <rect x="28" y="38" width="16" height="52" rx="8" fill="white" />
-              <rect x="52" y="30" width="16" height="66" rx="8" fill="white" />
-              <rect x="76" y="38" width="16" height="52" rx="8" fill="white" />
+              <path d="M50 4 L90 20 L90 60 Q90 90 50 106 Q10 90 10 60 L10 20 Z" fill="url(#cdlg-grad)" />
+              <path d="M50 8 L86 22.5 L86 59 Q86 85 50 100 Q14 85 14 59 L14 22.5 Z"
+                fill="none" stroke="rgba(120,170,255,0.3)" strokeWidth="1.5" />
+              <rect x="21" y="34" width="14" height="46" rx="7" fill="rgba(255,255,255,0.16)" />
+              <rect x="21" y="34" width="14" height="46" rx="7" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" />
+              <rect x="43" y="34" width="14" height="46" rx="7" fill="rgba(255,255,255,0.16)" />
+              <rect x="43" y="34" width="14" height="46" rx="7" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" />
+              <rect x="65" y="34" width="14" height="46" rx="7" fill="rgba(255,255,255,0.16)" />
+              <rect x="65" y="34" width="14" height="46" rx="7" fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" />
+              <path d="M50 8 L86 22.5 L86 40 C65 33 35 33 14 40 L14 22.5 Z"
+                fill="url(#cdlg-gloss)" clipPath="url(#cdlg-clip)" />
             </svg>
             <Box>
               <Typography variant="subtitle2" sx={{ fontWeight: 800, color: 'text.primary', lineHeight: 1.1, letterSpacing: '-0.01em' }}>
@@ -905,11 +1065,25 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
 
           {/* Action buttons */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            {/* Export chat */}
-            <Tooltip title="Export chat">
-              <IconButton
-                size="small"
+            {/* Save chat (post-Phase-2: renamed from "Export chat", now a
+                format picker consolidating the old .txt export and the
+                separate "Generate PDF report" icon into one menu) */}
+            <Tooltip title="Save chat">
+              <span>
+                <IconButton
+                  size="small"
+                  disabled={!tabs[currentTab]?.messages.length}
+                  onClick={(e) => setSaveMenuAnchor(e.currentTarget)}
+                  sx={{ color: 'primary.main', '&:hover': { bgcolor: (t) => alpha(t.palette.primary.main, 0.1) } }}
+                >
+                  <SaveIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+            <Menu anchorEl={saveMenuAnchor} open={!!saveMenuAnchor} onClose={() => setSaveMenuAnchor(null)}>
+              <MenuItem
                 onClick={() => {
+                  setSaveMenuAnchor(null)
                   const tab = tabs[currentTab]
                   if (!tab) return
                   const text = tab.messages.map(m =>
@@ -921,22 +1095,24 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
                   a.download = `sentry-chat-${Date.now()}.txt`
                   a.click()
                 }}
-                sx={{ color: 'primary.main', '&:hover': { bgcolor: (t) => alpha(t.palette.primary.main, 0.1) } }}
               >
-                <ExportIcon sx={{ fontSize: 18 }} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="View reasoning trace">
-              <span>
-                <IconButton
-                  size="small"
-                  onClick={openReasoningTrace}
-                  disabled={!sessionSummary || sessionSummary.total_interactions === 0}
-                >
-                  <ReasoningIcon sx={{ fontSize: 18 }} />
-                </IconButton>
-              </span>
-            </Tooltip>
+                Save as .txt
+              </MenuItem>
+              <MenuItem
+                onClick={async () => {
+                  setSaveMenuAnchor(null)
+                  const tab = tabs[currentTab]
+                  if (!tab) return
+                  try {
+                    setLoading(true)
+                    const res = await claudeApi.generateChatReport({ tab_title: tab.title, messages: tab.messages })
+                    alert(`Report saved: ${res.data.filename}`)
+                  } catch { /* ignore */ } finally { setLoading(false) }
+                }}
+              >
+                Save as PDF
+              </MenuItem>
+            </Menu>
             <IconButton
               size="small"
               onClick={(e) => {
@@ -1209,7 +1385,7 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
           
           {tabs[currentTab]?.messages.length === 0 && (
             <Box sx={{ textAlign: 'center', mt: 4 }}>
-              <Typography variant="body2" color="text.secondary">Start a conversation</Typography>
+              <Typography variant="body2" color="text.secondary">{greeting}</Typography>
               {selectedAgent && <Chip size="small" label={agents.find(a => a.id === selectedAgent)?.name} sx={{ mt: 1 }} />}
             </Box>
           )}
@@ -1220,10 +1396,52 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
                 ml: msg.role === 'user' ? 4 : 0, mr: msg.role === 'user' ? 0 : 4,
                 border: 1, borderColor: msg.role === 'user' ? alpha(theme.palette.primary.main, 0.2) : 'divider',
               }}>
-                <Typography variant="caption" sx={{ fontWeight: 600, color: msg.role === 'user' ? 'primary.main' : 'text.secondary', mb: 0.5, display: 'block' }}>
-                  {msg.role === 'user' ? 'You' : 'Sentry Agentic'}
-                </Typography>
-                {renderContent(msg.content, i)}
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600, color: msg.role === 'user' ? 'primary.main' : 'text.secondary' }}>
+                    {msg.role === 'user' ? 'You' : 'Sentry Agentic'}
+                  </Typography>
+                  {msg.role === 'user' && typeof msg.content === 'string' && editingIndex !== i && (
+                    <Tooltip title="Edit & resend">
+                      <span>
+                        <IconButton size="small" disabled={loading} onClick={() => handleEditStart(i, msg)} sx={{ p: 0.25 }}>
+                          <EditIcon sx={{ fontSize: 14 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  )}
+                </Box>
+                {editingIndex === i ? (
+                  <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'flex-end' }}>
+                    <TextField
+                      fullWidth
+                      multiline
+                      maxRows={6}
+                      size="small"
+                      autoFocus
+                      value={editingText}
+                      onChange={(e) => setEditingText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditSave(i) }
+                        if (e.key === 'Escape') handleEditCancel()
+                      }}
+                    />
+                    <Tooltip title="Save & resend">
+                      <IconButton size="small" onClick={() => handleEditSave(i)}><CheckIcon sx={{ fontSize: 18 }} /></IconButton>
+                    </Tooltip>
+                    <Tooltip title="Cancel">
+                      <IconButton size="small" onClick={handleEditCancel}><CloseIcon sx={{ fontSize: 18 }} /></IconButton>
+                    </Tooltip>
+                  </Box>
+                ) : (
+                  <>
+                    {renderContent(msg.content, i)}
+                    {msg.role === 'assistant' && msg.usage && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, opacity: 0.7 }}>
+                        {msg.usage.input_tokens.toLocaleString()} in · {msg.usage.output_tokens.toLocaleString()} out tok
+                      </Typography>
+                    )}
+                  </>
+                )}
               </Box>
             ))}
           
@@ -1318,15 +1536,6 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
             </FormControl>
             <Tooltip title="View agents"><IconButton size="small" onClick={() => setAgentInfoDialogOpen(true)}><InfoIcon sx={{ fontSize: 18 }} /></IconButton></Tooltip>
             <Box sx={{ flex: 1 }} />
-            <Tooltip title="Generate PDF report">
-              <IconButton size="small" disabled={!tabs[currentTab]?.messages.length || loading} onClick={async () => {
-                try {
-                  setLoading(true)
-                  const res = await claudeApi.generateChatReport({ tab_title: tabs[currentTab].title, messages: tabs[currentTab].messages })
-                  alert(`Report saved: ${res.data.filename}`)
-                } catch { /* ignore */ } finally { setLoading(false) }
-              }}><PdfIcon sx={{ fontSize: 18 }} /></IconButton>
-            </Tooltip>
           </Box>
           <Box sx={{ display: 'flex', gap: 1 }}>
             <TextField fullWidth multiline maxRows={3} value={input} onChange={(e) => setInput(e.target.value)} onKeyPress={handleKeyPress} placeholder="Message..." disabled={loading} size="small" />
@@ -1354,122 +1563,6 @@ export default function ClaudeDrawer({ open, onClose, onCollapse, initialMessage
         <DialogActions><Button onClick={() => setAgentInfoDialogOpen(false)}>Close</Button></DialogActions>
       </Dialog>
 
-      {/* GH #79 — Reasoning trace drawer */}
-      <Dialog open={traceOpen} onClose={() => setTraceOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <ReasoningIcon fontSize="small" />
-          Reasoning Trace
-          {sessionSummary && (
-            <Chip
-              size="small"
-              label={`${sessionSummary.total_interactions} calls · $${sessionSummary.total_cost_usd.toFixed(4)}`}
-              sx={{ ml: 1 }}
-            />
-          )}
-        </DialogTitle>
-        <DialogContent dividers sx={{ display: 'flex', gap: 2, p: 0, height: '70vh' }}>
-          <Box sx={{ width: 260, borderRight: 1, borderColor: 'divider', overflow: 'auto' }}>
-            {traceLoading ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}><CircularProgress size={18} /></Box>
-            ) : traceInteractions.length === 0 ? (
-              <Box sx={{ p: 2 }}><Typography variant="caption" color="text.secondary">No reasoning traces yet.</Typography></Box>
-            ) : (
-              <List dense>
-                {traceInteractions.map((it) => (
-                  <ListItem
-                    key={it.interaction_id}
-                    button
-                    selected={traceSelected?.interaction_id === it.interaction_id}
-                    onClick={() => loadTraceInteraction(it.interaction_id)}
-                    sx={{ py: 0.5, alignItems: 'flex-start' }}
-                  >
-                    <ListItemText
-                      primary={
-                        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-                          <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-                            {it.created_at ? new Date(it.created_at).toLocaleTimeString() : ''}
-                          </Typography>
-                          {it.has_thinking && <Chip label="💭" size="small" sx={{ height: 16, fontSize: '0.65rem' }} />}
-                          {it.has_tools && <Chip label="🔧" size="small" sx={{ height: 16, fontSize: '0.65rem' }} />}
-                        </Box>
-                      }
-                      secondary={
-                        <Typography variant="caption" color="text.secondary">
-                          {it.agent_id || 'chat'} · {it.input_tokens}/{it.output_tokens} tok · ${(it.cost_usd ?? 0).toFixed(4)}
-                        </Typography>
-                      }
-                    />
-                  </ListItem>
-                ))}
-              </List>
-            )}
-          </Box>
-          <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-            {!traceSelected ? (
-              <Typography variant="body2" color="text.secondary">
-                Select an interaction to view full reasoning, tool calls, and response.
-              </Typography>
-            ) : (
-              <Box>
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                  {traceSelected.model} · stop={traceSelected.stop_reason || '—'} · {traceSelected.duration_ms}ms · ${(traceSelected.cost_usd ?? 0).toFixed(4)}
-                </Typography>
-
-                {traceSelected.thinking_content && (
-                  <Box sx={{ mb: 2, p: 1.5, bgcolor: alpha(theme.palette.info.main, 0.05), borderLeft: 2, borderColor: 'info.main' }}>
-                    <Typography variant="caption" sx={{ fontWeight: 600, color: 'info.main', display: 'block', mb: 0.5 }}>
-                      💭 Thinking ({traceSelected.thinking_content.length} chars)
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                      {traceSelected.thinking_content}
-                    </Typography>
-                  </Box>
-                )}
-
-                {traceSelected.response_content && (
-                  <Box sx={{ mb: 2, p: 1.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 1 }}>
-                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>Response</Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>
-                      {traceSelected.response_content}
-                    </Typography>
-                  </Box>
-                )}
-
-                {Array.isArray(traceSelected.tool_calls) && traceSelected.tool_calls.length > 0 && (
-                  <Box sx={{ mb: 2 }}>
-                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>Tool Calls</Typography>
-                    {traceSelected.tool_calls.map((tc: any, i: number) => (
-                      <Box key={i} sx={{ mb: 1, p: 1, bgcolor: alpha(theme.palette.warning.main, 0.05), borderLeft: 2, borderColor: 'warning.main' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>🔧 {tc.name}</Typography>
-                        <Typography variant="body2" component="pre" sx={{ fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap', m: 0, mt: 0.5 }}>
-                          {JSON.stringify(tc.input, null, 2)}
-                        </Typography>
-                      </Box>
-                    ))}
-                  </Box>
-                )}
-
-                {Array.isArray(traceSelected.tool_results) && traceSelected.tool_results.length > 0 && (
-                  <Box sx={{ mb: 2 }}>
-                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', mb: 0.5 }}>Tool Results (input to this call)</Typography>
-                    {traceSelected.tool_results.map((tr: any, i: number) => (
-                      <Box key={i} sx={{ mb: 1, p: 1, bgcolor: alpha(theme.palette.success.main, 0.05), borderLeft: 2, borderColor: tr.is_error ? 'error.main' : 'success.main' }}>
-                        <Typography variant="caption" sx={{ fontWeight: 600, fontFamily: 'monospace' }}>
-                          {tr.is_error ? '❌' : '✅'} {tr.tool_use_id}
-                        </Typography>
-                        <Typography variant="body2" component="pre" sx={{ fontFamily: 'monospace', fontSize: '0.7rem', whiteSpace: 'pre-wrap', m: 0, mt: 0.5 }}>
-                          {typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content, null, 2)}
-                        </Typography>
-                      </Box>
-                    ))}
-                  </Box>
-                )}
-              </Box>
-            )}
-          </Box>
-        </DialogContent>
-        <DialogActions><Button onClick={() => setTraceOpen(false)}>Close</Button></DialogActions>
-      </Dialog>
     </Drawer>
   )
 }

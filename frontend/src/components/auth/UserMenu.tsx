@@ -17,9 +17,7 @@ import {
   ListItemText,
 } from '@mui/material';
 import {
-  AccountCircle,
   Logout,
-  Settings,
   Security,
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
@@ -36,17 +34,6 @@ export default function UserMenu() {
 
   const handleClose = () => {
     setAnchorEl(null);
-  };
-
-  const handleProfile = () => {
-    handleClose();
-    // Navigate to profile page (to be implemented)
-    navigate('/profile');
-  };
-
-  const handleSettings = () => {
-    handleClose();
-    navigate('/settings');
   };
 
   const handleLogout = async () => {
@@ -122,21 +109,11 @@ export default function UserMenu() {
 
         <Divider />
 
-        {/* Menu Items */}
-        <MenuItem onClick={handleProfile}>
-          <ListItemIcon>
-            <AccountCircle fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>Profile</ListItemText>
-        </MenuItem>
-
-        <MenuItem onClick={handleSettings}>
-          <ListItemIcon>
-            <Settings fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>Settings</ListItemText>
-        </MenuItem>
-
+        {/* Profile and Settings links removed from this dropdown
+            (post-Phase-2): Settings already has its own left-nav entry, and
+            Profile is being folded into the Settings page instead of living
+            here -- see the pending role/RBAC clarification before that
+            migration lands. */}
         {user.mfa_enabled && (
           <MenuItem disabled>
             <ListItemIcon>

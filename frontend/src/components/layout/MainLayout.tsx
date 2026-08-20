@@ -15,23 +15,15 @@ import { Box, Tooltip, Typography } from '@mui/material'
 import { Chat as ChatIcon, ChevronLeft, ChevronRight } from '@mui/icons-material'
 import NavigationRail, { COLLAPSED_WIDTH } from './NavigationRail'
 import ClaudeDrawer from '../claude/ClaudeDrawer'
-import { configApi } from '../../services/api'
-import { useAuth } from '../../contexts/AuthContext'
+import UserMenu from '../auth/UserMenu'
+import ClientSelector from './ClientSelector'
+import { useSelectedClient } from '../../contexts/SelectedClientContext'
 
 const CHAT_WIDTH = 390   // chat panel when open
 const TAB_WIDTH  = 34    // permanent right-edge tab
 
-function timeGreeting(): string {
-  const h = new Date().getHours()
-  if (h >= 5  && h < 12) return 'Good morning'
-  if (h >= 12 && h < 17) return 'Good afternoon'
-  if (h >= 17 && h < 21) return 'Good evening'
-  return 'Good night'
-}
-
 export default function MainLayout() {
-  const { user } = useAuth()
-
+  const { isLocked } = useSelectedClient()
   // Chat starts closed -- user opens via the permanent tab
   const [chatOpen, setChatOpen] = useState(false)
   const [investigationData, setInvestigationData] = useState<{
@@ -39,19 +31,26 @@ export default function MainLayout() {
     agentId: string
     title: string
   } | null>(null)
-  const [enabledIntegrations, setEnabledIntegrations] = useState<string[]>([])
+  // Prompts Repo (post-Phase-2): pre-fills a new chat tab's input without
+  // sending -- confirmed behavior, distinct from handleInvestigate's
+  // auto-send. `key` increments per call so clicking the same prompt twice
+  // in a row still opens a fresh tab (ClaudeDrawer keys its effect off it).
+  const [pendingDraft, setPendingDraft] = useState<{ text: string; key: number } | null>(null)
+  // Chats History (post-Phase-2): reopen an existing saved tab by id.
+  const [pendingTabId, setPendingTabId] = useState<string | null>(null)
 
-  // Auto-open chat briefly on first login to announce it, then close
+  // Auto-open chat on first login to announce it. Previously force-closed
+  // itself again 3.5s later unconditionally -- confirmed bug (2026-08-05):
+  // that unmounted ClaudeDrawer regardless of what the user was doing
+  // (mid-typing, about to click Send), and the unmount's tabs-persist
+  // effect wrote an empty tabs array to localStorage since the untouched
+  // "Chat 1" tab had zero messages -- poisoning the NEXT chat open into a
+  // permanently empty `tabs` state (see ClaudeDrawer.tsx's
+  // loadPersistedData, and handleSend's silent throw on
+  // tabs[currentTab].messages). The user closes it themselves via the
+  // existing tab/close controls now.
   useEffect(() => {
     setChatOpen(true)
-    const t = setTimeout(() => setChatOpen(false), 3500)
-    return () => clearTimeout(t)
-  }, [])
-
-  useEffect(() => {
-    configApi.getIntegrations()
-      .then(res => setEnabledIntegrations(res.data?.enabled_integrations || []))
-      .catch(() => setEnabledIntegrations([]))
   }, [])
 
   const handleInvestigate = (_id: string, agentId: string, prompt: string, title: string) => {
@@ -59,12 +58,24 @@ export default function MainLayout() {
     setChatOpen(true)
   }
 
-  const toggleChat  = () => setChatOpen(v => !v)
-  const handleClose = () => { setChatOpen(false); setInvestigationData(null) }
-  const handleCollapse = () => setChatOpen(false)
+  const openChatWithDraft = (text: string) => {
+    setPendingDraft(prev => ({ text, key: (prev?.key ?? 0) + 1 }))
+    setChatOpen(true)
+  }
 
-  const firstName = user?.full_name ? user.full_name.split(' ')[0] : (user?.username || 'Operator')
-  const client    = (user as any)?.organisation || 'Cybervergent'
+  const openChatWithTab = (tabId: string) => {
+    setPendingTabId(tabId)
+    setChatOpen(true)
+  }
+
+  const toggleChat  = () => setChatOpen(v => !v)
+  const handleClose = () => {
+    setChatOpen(false)
+    setInvestigationData(null)
+    setPendingDraft(null)
+    setPendingTabId(null)
+  }
+  const handleCollapse = () => setChatOpen(false)
 
   // Main content width = viewport - nav - tab - (chat if open)
   const chatPanelW = chatOpen ? CHAT_WIDTH : 0
@@ -76,11 +87,22 @@ export default function MainLayout() {
       bgcolor: 'background.default', position: 'relative',
     }}>
       {/* Left navigation rail */}
-      <NavigationRail
-        enabledIntegrations={enabledIntegrations}
-        onOpenChat={() => setChatOpen(true)}
-        chatOpen={chatOpen}
-      />
+      <NavigationRail />
+
+      {/* Account menu + client selector -- always visible top-right, not
+          hidden inside the collapsible nav rail (post-Phase-2 fix). Offset
+          left of the permanent chat tab so they never overlap in the
+          closed state. The client selector deliberately stays visible even
+          while chat is open (losing client context every time you open
+          chat would be disruptive) -- only UserMenu hides then, since it
+          would otherwise sit on top of/inside the chat panel's own header,
+          the panel opening into this exact screen region. Client selector
+          never renders for role-client users (locked to their own org --
+          see SelectedClientContext's isLocked). */}
+      <Box sx={{ position: 'fixed', top: 12, right: TAB_WIDTH + 12, zIndex: 1301, display: 'flex', gap: 1, alignItems: 'center' }}>
+        {!isLocked && <ClientSelector />}
+        {!chatOpen && <UserMenu />}
+      </Box>
 
       {/* Main page content -- always sized to exactly fill remaining space */}
       <Box
@@ -98,7 +120,7 @@ export default function MainLayout() {
         }}
       >
         <Box sx={{ flex: 1, p: 3, pt: 2, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
-          <Outlet context={{ handleInvestigate }} />
+          <Outlet context={{ handleInvestigate, openChatWithDraft, openChatWithTab }} />
         </Box>
       </Box>
 
@@ -122,6 +144,9 @@ export default function MainLayout() {
             initialMessages={investigationData?.messages}
             initialAgentId={investigationData?.agentId}
             initialTitle={investigationData?.title}
+            initialDraftText={pendingDraft?.text}
+            initialDraftKey={pendingDraft?.key}
+            initialActiveTabId={pendingTabId ?? undefined}
             fullScreen={false}
             panelMode
           />
