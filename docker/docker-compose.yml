@@ -5,9 +5,19 @@ services:
     image: postgres:16-alpine
     container_name: sentry-postgres
     environment:
-      POSTGRES_DB: sentry_soc
-      POSTGRES_USER: sentry
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentry_secure_password_change_me}
+      # deeptempo/sentry_agentic_soc, not sentry/sentry_soc -- these values
+      # only take effect on a genuinely fresh/empty volume (Postgres skips
+      # init entirely once the data directory is non-empty), but they must
+      # match every DATABASE_URL below and the rest of this app's own
+      # conventions (env.example, backend/services default), or a fresh
+      # deployment initializes under a name nothing else expects. Confirmed
+      # live 2026-08-15/16: this compose file's original sentry/sentry_soc
+      # never actually matched the real running database -- a container
+      # recreate here doesn't touch existing data, but it did surface that
+      # this file had never been exercised against reality before.
+      POSTGRES_DB: sentry_agentic_soc
+      POSTGRES_USER: deeptempo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}
       POSTGRES_INITDB_ARGS: "-E UTF8"
     ports:
       - "5432:5432"
@@ -17,13 +27,19 @@ services:
       # the repo root where database/init/ actually lives.
       - ../database/init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sentry -d sentry_soc"]
+      test: ["CMD-SHELL", "pg_isready -U deeptempo -d sentry_agentic_soc"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Network egress restriction, 2026-08-19: postgres has no legitimate
+    # reason to ever reach the internet -- internal-only (Docker's
+    # `internal: true` flag below removes the default internet route
+    # entirely for anything on this network). Callers (backend, daemon,
+    # llm-worker) reach it by also being attached to internal-only, not
+    # by this service being reachable from sentry-network.
     networks:
-      - sentry-network
+      - internal-only
 
   # Redis - Job queue backend for ARQ (LLM request queuing + session store)
   redis:
@@ -40,8 +56,9 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Same reasoning as postgres above -- redis never calls out anywhere.
     networks:
-      - sentry-network
+      - internal-only
 
   # SOC Backend API
   backend:
@@ -50,13 +67,92 @@ services:
       dockerfile: docker/Dockerfile.backend
     container_name: sentry-backend
     environment:
-      - DATABASE_URL=postgresql://sentry:${POSTGRES_PASSWORD:-sentry_secure_password_change_me}@postgres:5432/sentry_soc
+      # database/connection.py's DatabaseManager is the actual code path in
+      # use -- it builds its connection from these five discrete vars
+      # (POSTGRES_HOST defaulting to "localhost"), NOT from DATABASE_URL
+      # (that string is only consulted by a different, less-used helper in
+      # core/config.py). Confirmed live 2026-08-16: setting only
+      # DATABASE_URL left this container trying to reach Postgres at
+      # localhost:5432 -- inside a container, "localhost" is the container
+      # itself, not the postgres service, so every DB call failed with
+      # Connection Refused (and login failures surfaced as a generic
+      # "invalid password" rather than the real underlying DB error).
+      # POSTGRES_HOST must be the Compose service name here, never
+      # "localhost" -- that's only correct for a host-run process.
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=sentry_agentic_soc
+      - POSTGRES_USER=deeptempo
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}
+      - DATABASE_URL=postgresql://deeptempo:${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}@postgres:5432/sentry_agentic_soc
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       - BIFROST_URL=${BIFROST_URL:-http://bifrost:8080}
       - REDIS_URL=redis://redis:6379/0
+      # Required at import time whenever DEV_MODE=false (backend/services/
+      # auth_service.py raises RuntimeError otherwise) -- missing entirely
+      # before 2026-08-16, so this service could never actually start in
+      # its real (non-dev-bypass) auth mode.
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DEV_MODE=${DEV_MODE:-false}
+      # mcp-config.json's sentinelone entry needs these to spawn purple-mcp
+      # -- never referenced anywhere in this file before 2026-08-18, so the
+      # container had zero path to a real SentinelOne credential regardless
+      # of the uv-cache fix above (purple-mcp would validate-fail on
+      # missing PURPLEMCP_CONSOLE_TOKEN/BASE_URL even with a warm cache).
+      - SENTINELONE_API_TOKEN=${SENTINELONE_API_TOKEN:-}
+      - SENTINELONE_CONSOLE_URL=${SENTINELONE_CONSOLE_URL:-}
+      # Reputation lookups (capabilities/reputation.py, used by Athena's
+      # artifact analysis, Hephaestus's malware analyst, and the Strategic
+      # Insights panel) -- never wired to this service at all before
+      # 2026-08-20, so every chat-triggered reputation check in the
+      # backend process silently reported "not configured" regardless of
+      # the real keys existing in the main .env.
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+      # Mail delivery channel -- same bridge as soc-daemon's identical
+      # block below, added 2026-08-18 (see that comment for why).
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_TLS=${SMTP_TLS:-true}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - THREAT_NOTIFICATION_EMAILS=${THREAT_NOTIFICATION_EMAILS:-}
+      # Real on/off switch for alert-notification email, added 2026-08-20 --
+      # capabilities/synergy.py::_notification_emails() checks this so you
+      # can pause email notifications without clearing/re-adding the real
+      # SMTP credentials above every time. Default true (no-op if unset).
+      # Telegram is a separate channel/toggle, unaffected by this.
+      - DAEMON_EMAIL_NOTIFICATIONS_ENABLED=${DAEMON_EMAIL_NOTIFICATIONS_ENABLED:-true}
       - PYTHONUNBUFFERED=1
+      # OTEL tracing, added 2026-08-20: off by default (core/telemetry.py's
+      # init_telemetry() is a no-op unless this is truthy) -- matches the
+      # otel-collector/jaeger/prometheus/grafana stack below being opt-in
+      # via `--profile observability`. Set VIGIL_OTEL_ENABLED=true and run
+      # with that profile to actually see traces; leaving it off costs
+      # nothing (core/telemetry.py's functions are all safe no-ops when
+      # disabled).
+      - VIGIL_OTEL_ENABLED=${VIGIL_OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    volumes:
+      # Bridges this container to the SAME encrypted secrets store /
+      # non-secret integration config the host-run backend has been using
+      # all session (AlienVault Central's client_secret + the 8 per-
+      # deployment secrets, VirusTotal, etc.) -- backend/secrets_manager.py
+      # and core/config.py both resolve these paths via Path.home(), which
+      # inside this container (running as the unprivileged `backend` user,
+      # not root) is /home/backend, not /root -- confirmed live 2026-08-18
+      # this mismatch meant the container could see NONE of these secrets
+      # before this mount existed, regardless of what was configured on
+      # the host. Local-dev-environment convenience specifically: shares
+      # secrets already managed from the Windows host into Docker Desktop.
+      # A real cloud deployment has no separate "host store" to bridge --
+      # secrets get entered directly against that single running instance
+      # via its own Settings UI instead, and this mount doesn't apply.
+      - ${USERPROFILE}/.sentry-agentic:/home/backend/.sentry-agentic
+      - ${USERPROFILE}/.sentry:/home/backend/.sentry
     ports:
       - "6987:6987"
     depends_on:
@@ -67,8 +163,14 @@ services:
       bifrost:
         condition: service_healthy
     restart: unless-stopped
+    # Network egress restriction, 2026-08-19: dual-homed -- sentry-network
+    # for its real external calls (VirusTotal/AbuseIPDB/SMTP/SentinelOne
+    # MCP subprocess when a chat-triggered lookup needs it), internal-only
+    # to reach postgres/redis/bifrost now that those no longer have a
+    # route to the internet.
     networks:
       - sentry-network
+      - internal-only
 
   # SOC Daemon - Autonomous monitoring and response
   soc-daemon:
@@ -77,8 +179,16 @@ services:
       dockerfile: docker/Dockerfile.daemon
     container_name: sentry-daemon
     environment:
-      # Database
-      - DATABASE_URL=postgresql://sentry:${POSTGRES_PASSWORD:-sentry_secure_password_change_me}@postgres:5432/sentry_soc
+      # Database -- see backend service's comment above: POSTGRES_HOST
+      # must be the Compose service name, not "localhost".
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=sentry_agentic_soc
+      - POSTGRES_USER=deeptempo
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}
+      - DATABASE_URL=postgresql://deeptempo:${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}@postgres:5432/sentry_agentic_soc
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DEV_MODE=${DEV_MODE:-false}
       # AI
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -117,16 +227,55 @@ services:
       # Logging
       - DAEMON_LOG_LEVEL=${DAEMON_LOG_LEVEL:-INFO}
       - PYTHONUNBUFFERED=1
+      # OTEL tracing, added 2026-08-20 -- see the identical block on the
+      # `backend` service above for why this defaults off. This is the
+      # container that matters most for it: daemon/agent_runner.py
+      # (escalated investigations) and daemon/processor.py (the routine
+      # path, instrumented the same day) both emit spans through this.
+      - VIGIL_OTEL_ENABLED=${VIGIL_OTEL_ENABLED:-false}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       # Integrations (loaded from core/config)
       - SPLUNK_URL=${SPLUNK_URL}
       - SPLUNK_USERNAME=${SPLUNK_USERNAME}
       - SPLUNK_PASSWORD=${SPLUNK_PASSWORD}
       - CROWDSTRIKE_CLIENT_ID=${CROWDSTRIKE_CLIENT_ID}
       - CROWDSTRIKE_CLIENT_SECRET=${CROWDSTRIKE_CLIENT_SECRET}
-      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY}
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
       - SHODAN_API_KEY=${SHODAN_API_KEY}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY}
+      # Root cause of a real live bug found 2026-08-18: this service never
+      # had these two vars at all (only `backend` did, added 2026-08-18
+      # earlier the same day) -- mcp-config.json's sentinelone entry needs
+      # them to spawn purple-mcp, so daemon/poller.py's SentinelOne polling
+      # loop failed to connect on literally every single 20s cycle since
+      # this container was first started, silently (the failure was only
+      # logged at .debug() until this same fix pass), leaving real alerts
+      # -- including two CRITICAL ransomware detections -- completely
+      # unprocessed. See the same comment on the `backend` service above.
+      - SENTINELONE_API_TOKEN=${SENTINELONE_API_TOKEN:-}
+      - SENTINELONE_CONSOLE_URL=${SENTINELONE_CONSOLE_URL:-}
+      # Mail delivery channel -- explicit user correction 2026-08-18: this
+      # WAS already set up (real Gmail SMTP creds + recipient exist in the
+      # main repo-root .env), just never bridged into this compose file,
+      # so capabilities/notifier.py's notify_email() had zero real SMTP
+      # config in this container and every notification silently had
+      # nowhere to go. services/email_service.py's EmailService reads
+      # these via plain os.getenv(), not the encrypted secrets store.
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_TLS=${SMTP_TLS:-true}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - THREAT_NOTIFICATION_EMAILS=${THREAT_NOTIFICATION_EMAILS:-}
+      # Real on/off switch for alert-notification email, added 2026-08-20 --
+      # capabilities/synergy.py::_notification_emails() checks this so you
+      # can pause email notifications without clearing/re-adding the real
+      # SMTP credentials above every time. Default true (no-op if unset).
+      # Telegram is a separate channel/toggle, unaffected by this.
+      - DAEMON_EMAIL_NOTIFICATIONS_ENABLED=${DAEMON_EMAIL_NOTIFICATIONS_ENABLED:-true}
       # Kafka ingestion (opt-in; UI toggle at /settings?tab=kafka)
       - KAFKA_ENABLED=${KAFKA_ENABLED:-false}
       - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
@@ -140,6 +289,32 @@ services:
       - KAFKA_SSL_CA_LOCATION=${KAFKA_SSL_CA_LOCATION:-}
       - KAFKA_MAX_POLL_RECORDS=${KAFKA_MAX_POLL_RECORDS:-500}
       - KAFKA_SESSION_TIMEOUT_MS=${KAFKA_SESSION_TIMEOUT_MS:-30000}
+    volumes:
+      # Same bridge as `backend`'s identical mount above -- but this
+      # container's Dockerfile (docker/Dockerfile.daemon) creates and runs
+      # as user `soc` (useradd -m -u 1000 soc), not `backend`, so Path.home()
+      # resolves to /home/soc here, not /home/backend. Using the backend
+      # container's path here would silently mount to a directory nothing
+      # in this container ever reads from.
+      - ${USERPROFILE}/.sentry-agentic:/home/soc/.sentry-agentic
+      - ${USERPROFILE}/.sentry:/home/soc/.sentry
+      # Fix for the purple-mcp cold-build-on-every-restart problem,
+      # 2026-08-19: the Dockerfile's own build-time pre-warm (RUN uvx
+      # --from git+...@v0.7.0 purple-mcp --help) DOES populate
+      # /app/.cache/uv correctly, but live-confirmed that cache still
+      # misses at runtime -- purple-mcp's dependencies (numpy, pandas,
+      # cryptography, ...) aren't pinned/locked, so uv re-resolves fresh
+      # on every invocation and PyPI publishing newer patch releases
+      # between builds invalidates the exact-version cache keys. A named
+      # volume here doesn't eliminate that drift entirely, but it makes
+      # the cache durable ACROSS container recreates (unlike the current
+      # image-layer snapshot, which never gets refreshed after build) --
+      # a resolution that succeeds once stays warm for every subsequent
+      # restart until the next genuine drift, instead of re-downloading
+      # ~35MB of packages on literally every single restart as observed
+      # today. Docker inherits the image's existing owned-by-soc content
+      # into this volume on first mount since the directory isn't empty.
+      - daemon_uv_cache:/app/.cache/uv
     ports:
       - "8081:8081"  # Webhook ingestion
       - "9090:9090"  # Prometheus /metrics (OTEL PrometheusMetricReader)
@@ -152,8 +327,24 @@ services:
       bifrost:
         condition: service_healthy
     restart: unless-stopped
+    # Bug found live 2026-08-19: daemon/main.py's graceful-shutdown drain
+    # (DAEMON_SHUTDOWN_GRACE_SECONDS, default 30s -- runtime-hardening
+    # gap fixed the same day) was being silently undermined by Docker's
+    # own default stop timeout, 10s -- `docker restart`/`stop` SIGKILLs
+    # the container well before the application's own drain logic can
+    # finish. Confirmed live: shutdown logged at :09, the replacement
+    # container was already initializing at :15, ~6s later, not 30s.
+    # stop_grace_period must stay >= DAEMON_SHUTDOWN_GRACE_SECONDS (a
+    # little headroom added) for the application-level fix to actually
+    # take effect rather than being a no-op under Docker's own default.
+    stop_grace_period: 35s
+    # Network egress restriction, 2026-08-19: dual-homed, same reasoning
+    # as backend above -- real external calls (SentinelOne, VirusTotal,
+    # AbuseIPDB, Shodan, AlienVault, SMTP) need sentry-network;
+    # internal-only reaches postgres/redis/bifrost.
     networks:
       - sentry-network
+      - internal-only
 
   # ARQ Worker - Processes LLM requests from the queue
   llm-worker:
@@ -163,7 +354,16 @@ services:
     container_name: sentry-llm-worker
     command: ["python", "-m", "services.run_llm_worker"]
     environment:
-      - DATABASE_URL=postgresql://sentry:${POSTGRES_PASSWORD:-sentry_secure_password_change_me}@postgres:5432/sentry_soc
+      # Database -- see backend service's comment above: POSTGRES_HOST
+      # must be the Compose service name, not "localhost".
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=sentry_agentic_soc
+      - POSTGRES_USER=deeptempo
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}
+      - DATABASE_URL=postgresql://deeptempo:${POSTGRES_PASSWORD:-deeptempo_secure_password_change_me}@postgres:5432/sentry_agentic_soc
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DEV_MODE=${DEV_MODE:-false}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
@@ -178,8 +378,27 @@ services:
       bifrost:
         condition: service_healthy
     restart: unless-stopped
+    # Network egress restriction, 2026-08-19: kept dual-homed rather than
+    # internal-only-only, deliberately -- its ClaudeService is constructed
+    # with use_mcp_tools=True, and whether that means it directly executes
+    # MCP tool calls (SentinelOne/VirusTotal/etc., needing real internet)
+    # in-process wasn't fully traceable without risking a live regression
+    # to confirm. internal-only is still needed regardless, to reach
+    # postgres/redis now that those lost their sentry-network route.
     networks:
       - sentry-network
+      - internal-only
+    # This service reuses Dockerfile.backend but overrides CMD to run the
+    # ARQ worker (services.run_llm_worker), not the FastAPI app -- so the
+    # Dockerfile's baked-in HEALTHCHECK (`curl localhost:6987/api/health`)
+    # always fails here: there's no HTTP server on this port in worker mode.
+    # Found live 2026-08-20 (sentry-llm-worker permanently "unhealthy" while
+    # functionally fine, confirmed via a live synthesize() smoke test through
+    # it). Disabled rather than replaced with a process/Redis probe -- ARQ
+    # doesn't have health_check_interval/health_check_key configured in
+    # WorkerSettings, so there's no cheap, real signal to check yet.
+    healthcheck:
+      disable: true
 
   # ─── Multi-provider LLM gateway ───────────────────────────────────────────
   # Bifrost is the single path for all LLM traffic (GH #84 PR-B). Anthropic
@@ -209,8 +428,14 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Network egress restriction, 2026-08-19: dual-homed -- sentry-network
+    # for real internet access (Anthropic/OpenAI/Ollama APIs, its whole
+    # purpose), internal-only so backend/daemon/llm-worker (also
+    # internal-only) can reach it, and so it can reach redis (now
+    # internal-only too) for its own caching.
     networks:
       - sentry-network
+      - internal-only
 
   # PgAdmin for database management (optional, can be commented out in production)
   pgadmin:
@@ -227,8 +452,12 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
+    # Network egress restriction, 2026-08-19: postgres is now
+    # internal-only-only -- without this, pgadmin would silently be
+    # unable to reach it despite starting fine and looking healthy.
     networks:
       - sentry-network
+      - internal-only
     profiles:
       - dev  # Only start in dev profile
 
@@ -372,6 +601,8 @@ volumes:
     driver: local
   redis_data:
     driver: local
+  daemon_uv_cache:
+    driver: local
   pgadmin_data:
     driver: local
   splunk_data:
@@ -388,4 +619,12 @@ volumes:
 networks:
   sentry-network:
     driver: bridge
+  # Network egress restriction, 2026-08-19 -- `internal: true` means
+  # Docker never gives containers on this network a default route to the
+  # internet, only to each other. postgres/redis are internal-only-only
+  # (no legitimate reason to ever call out); every other service that
+  # needs to reach them is dual-homed onto both networks.
+  internal-only:
+    driver: bridge
+    internal: true
 
