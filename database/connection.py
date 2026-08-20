@@ -373,11 +373,55 @@ def get_db_manager() -> DatabaseManager:
     return _db_manager
 
 
+def get_db_session_dependency() -> Generator[Session, None, None]:
+    """
+    FastAPI dependency that yields a database session and closes it after
+    the request. Use ONLY via `Depends(get_db_session_dependency)` --
+    calling this directly returns a generator object, not a Session (see
+    the regression note below). For a plain Session outside of FastAPI's
+    dependency injection, call `get_db_session()` instead.
+
+    Root cause fixed 2026-08-20 (live production outage -- pool exhaustion,
+    "QueuePool limit of size 5 overflow 10 reached", 15 connections stuck
+    `idle in transaction` for 15+ minutes): `get_db_session()` used to be
+    `return db_manager.get_session()`, a plain return with no `yield`.
+    FastAPI's `Depends()` only runs a dependency's post-request cleanup
+    when the dependency is a *generator* -- a plain-return function gives
+    FastAPI no hook to call `session.close()` after the request, so every
+    endpoint using `Depends(get_db_session)` leaked one pooled connection
+    per call, permanently, for as long as that shape existed.
+
+    Regression fixed 2026-08-20 (same day -- `GET /api/auth/me` throwing
+    `AttributeError: 'generator' object has no attribute 'query'`, which
+    made the *login page* show "Invalid credentials" for correct
+    credentials): the pool-exhaustion fix above initially converted
+    `get_db_session()` itself into this generator, verified only against
+    the ~7 FastAPI files using `Depends(get_db_session)`
+    (backend/middleware/auth.py, backend/api/{analytics,auth,users,
+    llm_providers,jira_export,ai_config}.py) -- not the ~80+ other call
+    sites across services/, backend/api/{sla_policies,case_metrics,
+    cases,config}.py, mcp-servers/, scripts/, and tools/ that call
+    `session = get_db_session()` directly and expect a plain Session back.
+    Split into two functions so each calling convention gets the function
+    shape it actually needs, instead of one function serving two
+    incompatible contracts. `database/service.py`'s `session_scope()` (a
+    real `@contextmanager` with a `finally: session.close()`) was never
+    affected by either bug -- this has always been specifically the
+    FastAPI-dependency-injection path.
+    """
+    db_manager = get_db_manager()
+    session = db_manager.get_session()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 def get_db_session() -> Session:
     """
-    Get a new database session.
-
-    This is a convenience function for dependency injection in FastAPI.
+    Get a plain database session. Caller is responsible for closing it
+    (`session.close()`) when done -- this is NOT a FastAPI dependency;
+    use `Depends(get_db_session_dependency)` for that instead.
 
     Returns:
         SQLAlchemy session

@@ -41,7 +41,7 @@ from backend.services.token_blacklist import (
 from backend.middleware.auth import get_current_user, get_current_active_user
 from backend.middleware.rate_limit import limiter
 from database.models import User
-from database.connection import get_db_session
+from database.connection import get_db_session_dependency as get_db_session
 
 logger = logging.getLogger(__name__)
 

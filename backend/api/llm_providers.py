@@ -25,7 +25,7 @@ from secrets_manager import delete_secret, get_secret, set_secret
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from backend.middleware.auth import get_current_active_user
 from backend.services.auth_service import AuthService
-from database.connection import get_db_session
+from database.connection import get_db_session_dependency as get_db_session
 from database.models import LLMProviderConfig, User
 from services.bifrost_admin import push_provider_key
 from services.url_safety import UrlSafetyError, validate_provider_url
@@ -170,6 +170,46 @@ def _clear_other_defaults(db: Session, provider_type: str, keep_id: str) -> None
     )
 
 
+async def _sync_default_weights(db: Session, provider_type: str, default_id: str) -> None:
+    """Re-push Bifrost's per-key ``weight`` so it mirrors ``is_default``.
+
+    Bug fixed 2026-08-06: flipping ``is_default`` in our own DB has zero
+    effect on which key Bifrost actually picks for a request -- Bifrost
+    routes by matching a requested model against every key that lists
+    it, then breaks ties by weight, entirely independent of anything in
+    our DB. Live-confirmed: an old, exhausted, Bifrost-native key
+    (weight 1, not managed by this module) kept winning that tie-break
+    against every key we ever pushed (which defaulted to weight 0),
+    regardless of which row the UI had marked default -- the literal
+    cause of "credit balance too low" persisting after "Sentry" was set
+    default. The row matching ``default_id`` gets
+    ``bifrost_admin.DEFAULT_ROW_WEIGHT``; every other active row of the
+    same provider_type gets ``NON_DEFAULT_ROW_WEIGHT``, so at most one
+    row's key ever outranks the rest.
+    """
+    from services.bifrost_admin import (
+        DEFAULT_ROW_WEIGHT,
+        NON_DEFAULT_ROW_WEIGHT,
+        push_provider_key,
+    )
+
+    rows = (
+        db.query(LLMProviderConfig)
+        .filter(
+            LLMProviderConfig.provider_type == provider_type,
+            LLMProviderConfig.is_active.is_(True),
+            LLMProviderConfig.api_key_ref.isnot(None),
+        )
+        .all()
+    )
+    for r in rows:
+        api_key = await _resolve_api_key(r)
+        if not api_key:
+            continue
+        weight = DEFAULT_ROW_WEIGHT if r.provider_id == default_id else NON_DEFAULT_ROW_WEIGHT
+        push_provider_key(r.provider_type, api_key, row_provider_id=r.provider_id, weight=weight)
+
+
 def _schedule_catalog_resync(reason: str) -> None:
     """Invalidate the model-list cache and fire a background sync.
 
@@ -226,7 +266,18 @@ async def create_provider(
             raise HTTPException(status_code=500, detail="Failed to persist API key")
         # Push live to Bifrost so subsequent LLM calls use the new key
         # without waiting for a container restart.
-        push_provider_key(payload.provider_type, payload.api_key)
+        push_provider_key(payload.provider_type, payload.api_key, row_provider_id=provider_id)
+
+    # Clear the existing default BEFORE inserting this row with
+    # is_default=True, not after (bug fixed 2026-08-05: a partial unique
+    # index enforces one default per provider_type, so staging the new
+    # row's insert first and clearing the old default second collides
+    # the moment SQLAlchemy autoflushes -- both rows briefly have
+    # is_default=true in the same flush, and the constraint rejects it
+    # before _clear_other_defaults' own UPDATE ever runs. Clearing first
+    # means only one row is ever "true" at any flush point.)
+    if payload.is_default:
+        _clear_other_defaults(db, payload.provider_type, provider_id)
 
     row = LLMProviderConfig(
         provider_id=provider_id,
@@ -241,11 +292,13 @@ async def create_provider(
     )
     db.add(row)
 
-    if payload.is_default:
-        _clear_other_defaults(db, payload.provider_type, provider_id)
-
     db.commit()
     db.refresh(row)
+    if payload.is_default:
+        # Bifrost's key weight -- not our "is_default" flag -- decides
+        # which credential it actually uses for an overlapping model; see
+        # _sync_default_weights' docstring.
+        await _sync_default_weights(db, payload.provider_type, provider_id)
     _schedule_catalog_resync(f"created provider {provider_id}")
     return _to_response(row)
 
@@ -282,21 +335,28 @@ async def update_provider(
             row.api_key_ref = None
             # Clearing the key: push an empty value to Bifrost so it stops
             # trying to authenticate with a stale credential.
-            push_provider_key(row.provider_type, "")
+            push_provider_key(row.provider_type, "", row_provider_id=provider_id)
         else:
             if not set_secret(ref, payload.api_key):
                 raise HTTPException(status_code=500, detail="Failed to persist API key")
             row.api_key_ref = ref
-            push_provider_key(row.provider_type, payload.api_key)
+            push_provider_key(row.provider_type, payload.api_key, row_provider_id=provider_id)
 
     if payload.is_default is True:
-        row.is_default = True
+        # Clear other defaults BEFORE setting this row's flag -- same
+        # partial-unique-index ordering fix as create_provider above.
         _clear_other_defaults(db, row.provider_type, provider_id)
+        row.is_default = True
     elif payload.is_default is False:
         row.is_default = False
 
     db.commit()
     db.refresh(row)
+    if payload.is_default is True:
+        # Bifrost's key weight -- not our "is_default" flag -- decides
+        # which credential it actually uses for an overlapping model; see
+        # _sync_default_weights' docstring.
+        await _sync_default_weights(db, row.provider_type, provider_id)
     _schedule_catalog_resync(f"updated provider {provider_id}")
     return _to_response(row)
 
@@ -318,7 +378,7 @@ async def delete_provider(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to delete secret %s: %s", row.api_key_ref, exc)
         # Wipe the corresponding value on Bifrost too.
-        push_provider_key(row.provider_type, "")
+        push_provider_key(row.provider_type, "", row_provider_id=provider_id)
 
     db.delete(row)
     db.commit()
@@ -336,10 +396,51 @@ async def set_default_provider(
     row = db.get(LLMProviderConfig, provider_id)
     if row is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    row.is_default = True
+    # Clear other defaults BEFORE setting this row's flag (bug fixed
+    # 2026-08-05) -- see create_provider's comment for the full partial-
+    # unique-index explanation. This was the exact endpoint the "Set as
+    # default" button in Settings -> AI Config calls, and the reported
+    # failure ("Failed to set default").
     _clear_other_defaults(db, row.provider_type, provider_id)
+    row.is_default = True
     db.commit()
     db.refresh(row)
+
+    # Push this row's actual key to Bifrost (bug fixed 2026-08-05: "still
+    # using the old key despite Sentry being the default"). Bifrost holds
+    # exactly ONE live key per provider_type (see push_provider_key's own
+    # docstring -- "seeds exactly one key per provider") -- create_provider
+    # and update_provider push it whenever a key is set, but this endpoint
+    # never did, so flipping is_default only ever updated OUR bookkeeping/
+    # UI, never which credential Bifrost was actually calling Anthropic
+    # with. Functionally indistinguishable from "the old key is hardcoded
+    # as default" from the user's side, even though nothing was literally
+    # hardcoded -- Bifrost was just never told anything changed.
+    if row.api_key_ref:
+        api_key = await _resolve_api_key(row)
+        if api_key:
+            pushed = push_provider_key(
+                row.provider_type, api_key, row_provider_id=provider_id, weight=None,
+            )
+            if not pushed:
+                logger.warning(
+                    "set_default_provider: DB default switched to %s but push_provider_key to Bifrost failed -- "
+                    "Bifrost may still be using the previous provider's key", provider_id,
+                )
+        else:
+            logger.warning("set_default_provider: could not resolve stored API key for %s", provider_id)
+
+    # Bug fixed 2026-08-06: the push above rotates the key VALUE but never
+    # touched WEIGHT, and Bifrost's own key-selection ignores our
+    # "is_default" flag entirely -- it picks among every key that lists a
+    # requested model by weight. Without this, a previously-default row's
+    # key (or Bifrost's own unmanaged bootstrap key) could keep winning
+    # that tie-break forever, so switching the default in our UI never
+    # actually changed which credential got used. See
+    # _sync_default_weights' docstring for the full incident.
+    await _sync_default_weights(db, row.provider_type, provider_id)
+
+    _schedule_catalog_resync(f"set default provider {provider_id}")
     return _to_response(row)
 
 
