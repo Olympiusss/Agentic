@@ -125,6 +125,31 @@ INSERT INTO roles (role_id, name, description, permissions, is_system_role) VALU
     "settings.write": true,
     "ai_chat.use": true,
     "ai_decisions.approve": true
+}', true),
+-- Real, restricted RBAC tier for external client-portal users (not cosmetic
+-- -- least-privilege by design): read their own findings/cases, use the
+-- SentinelOne chat, but no integration/settings/user-management visibility
+-- and no case reassignment or AI-decision approval (those are internal
+-- analyst functions). Mirrors Viewer's shape plus ai_chat.use, kept as its
+-- own named role rather than reusing Viewer since the two have distinct
+-- governance intent (internal junior viewer vs. external client).
+('role-client', 'Client', 'External client-portal access: read-only findings/cases and chat, no admin visibility', '{
+    "findings.read": true,
+    "findings.write": false,
+    "findings.delete": false,
+    "cases.read": true,
+    "cases.write": false,
+    "cases.delete": false,
+    "cases.assign": false,
+    "integrations.read": false,
+    "integrations.write": false,
+    "users.read": false,
+    "users.write": false,
+    "users.delete": false,
+    "settings.read": false,
+    "settings.write": false,
+    "ai_chat.use": true,
+    "ai_decisions.approve": false
 }', true)
 ON CONFLICT (role_id) DO NOTHING;
 
@@ -132,6 +157,24 @@ ON CONFLICT (role_id) DO NOTHING;
 -- Password hash for 'admin123' using bcrypt
 INSERT INTO users (user_id, username, email, password_hash, full_name, role_id, is_active, is_verified) VALUES
 ('user-admin-default', 'admin', 'admin@sentry.ai', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5aeWG6QErKLzG', 'System Administrator', 'role-admin', true, true)
+ON CONFLICT (user_id) DO NOTHING;
+
+-- Dedicated client-portal demo account (role-client) -- deliberately
+-- separate from user-admin-default so the sole admin login is never
+-- accidentally downgraded. Password: client123 (dev/demo only).
+INSERT INTO users (user_id, username, email, password_hash, full_name, role_id, is_active, is_verified) VALUES
+('user-client-default', 'client-demo', 'client-demo@sentry.ai', '$2b$12$Z6tsEB0tRpqj7YGs6ZjsUuC5SuIkc.KgKzLFyxKDDLIT.7F81FHRi', 'Client Demo', 'role-client', true, true)
+ON CONFLICT (user_id) DO NOTHING;
+
+-- Dedicated admin demo account (role-admin) -- the documented default
+-- ('admin'/'admin123') stopped matching this environment's actual
+-- password at some point (confirmed live, 2026-08-04: authenticate_user
+-- returned "Invalid password for user: admin" against the real DB).
+-- Rather than reset the existing user-admin-default account's password
+-- (an unnecessary, riskier change to touch), this is a second, known-
+-- working admin-role login for testing. Password: admin123 (dev/demo only).
+INSERT INTO users (user_id, username, email, password_hash, full_name, role_id, is_active, is_verified) VALUES
+('user-admin-demo', 'admin-demo', 'admin-demo@sentry.ai', '$2b$12$MaQwDDeTqFu7FNzbq0IS3.PKTu7igLK6YVnFloolC1nqPzX.Hlzq2', 'Admin Demo', 'role-admin', true, true)
 ON CONFLICT (user_id) DO NOTHING;
 
 -- Update trigger for updated_at

@@ -776,7 +776,7 @@ async def get_models():
                     "description": "Most intelligent model, best for complex tasks",
                 },
                 {
-                    "id": "claude-sonnet-4-20250514",
+                    "id": "claude-haiku-4-5-20251001",
                     "name": "Claude Sonnet 4",
                     "description": "Balanced speed and intelligence",
                 },
@@ -1071,7 +1071,7 @@ async def websocket_agent(websocket: WebSocket):
             system_prompt = data.get("system_prompt")
             allowed_tools = data.get("allowed_tools")
             max_turns = data.get("max_turns", 10)
-            model = data.get("model", "claude-sonnet-4-20250514")
+            model = data.get("model", "claude-haiku-4-5-20251001")
             agent_id = data.get("agent_id")
 
             # Handle session management
@@ -1227,7 +1227,7 @@ Please provide:
         gateway = await get_llm_gateway()
         response = await gateway.submit_chat(
             messages=[{"role": "user", "content": prompt}],
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=4096,
         )
         # Unwrap gateway envelope

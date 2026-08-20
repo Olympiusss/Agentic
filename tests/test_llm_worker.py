@@ -15,9 +15,80 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from services.llm_worker import _adapt_router_result_to_raw
+from services.llm_worker import (
+    _MAX_TRIES,
+    _adapt_router_result_to_raw,
+    _backoff_seconds,
+    _is_transient_llm_error,
+)
 
 pytestmark = pytest.mark.unit
+
+
+class _FakeStatusError(Exception):
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__(f"status {status_code}")
+
+
+class TestIsTransientLlmError:
+    def test_429_is_transient(self):
+        assert _is_transient_llm_error(_FakeStatusError(429)) is True
+
+    def test_5xx_is_transient(self):
+        assert _is_transient_llm_error(_FakeStatusError(500)) is True
+        assert _is_transient_llm_error(_FakeStatusError(503)) is True
+
+    def test_4xx_other_than_429_is_not_transient(self):
+        assert _is_transient_llm_error(_FakeStatusError(400)) is False
+        assert _is_transient_llm_error(_FakeStatusError(401)) is False
+        assert _is_transient_llm_error(_FakeStatusError(404)) is False
+
+    def test_rate_limit_class_name_is_transient_without_status_code(self):
+        class RateLimitError(Exception):
+            pass
+
+        assert _is_transient_llm_error(RateLimitError("too fast")) is True
+
+    def test_timeout_and_connection_class_names_are_transient(self):
+        class APITimeoutError(Exception):
+            pass
+
+        class APIConnectionError(Exception):
+            pass
+
+        assert _is_transient_llm_error(APITimeoutError("slow")) is True
+        assert _is_transient_llm_error(APIConnectionError("no route")) is True
+
+    def test_bad_request_and_auth_class_names_are_not_transient(self):
+        class BadRequestError(Exception):
+            pass
+
+        class AuthenticationError(Exception):
+            pass
+
+        assert _is_transient_llm_error(BadRequestError("bad")) is False
+        assert _is_transient_llm_error(AuthenticationError("nope")) is False
+
+    def test_unrecognized_error_defaults_to_not_transient(self):
+        # Explicit design requirement: an unknown error type must NOT
+        # retry indefinitely burning cost -- default to surfacing it via
+        # the dead-letter path instead.
+        assert _is_transient_llm_error(ValueError("something else")) is False
+
+
+class TestBackoffSeconds:
+    def test_exponential_growth(self):
+        assert _backoff_seconds(1) == 2.0
+        assert _backoff_seconds(2) == 4.0
+        assert _backoff_seconds(3) == 8.0
+
+    def test_capped_at_max(self):
+        assert _backoff_seconds(10) == 30.0
+
+    def test_max_tries_worth_of_delays_never_exceed_cap(self):
+        for attempt in range(1, _MAX_TRIES + 1):
+            assert _backoff_seconds(attempt) <= 30.0
 
 
 def test_adapt_router_result_emits_tool_use_stop_reason_when_tool_calls_present():

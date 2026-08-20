@@ -130,7 +130,7 @@ class CustomIntegrationService:
                     message=last_message,
                     context=context,
                     system_prompt=system_prompt,
-                    model="claude-sonnet-4-20250514",
+                    model="claude-haiku-4-5-20251001",
                 )
             else:
                 # Initial generation - create the analysis prompt
@@ -141,7 +141,7 @@ class CustomIntegrationService:
                 response = claude.chat(
                     message=prompt,
                     system_prompt=system_prompt,
-                    model="claude-sonnet-4-20250514",
+                    model="claude-haiku-4-5-20251001",
                 )
 
             # Check if Claude is asking questions or ready to generate

@@ -53,55 +53,140 @@ def _get_provider(name: str, client: httpx.Client) -> Optional[Dict[str, Any]]:
         return None
 
 
-def push_provider_key(provider_name: str, key_value: str) -> bool:
-    """Update the first configured key on ``provider_name`` with ``key_value``.
+def _key_name_for_row(row_provider_id: str) -> str:
+    """Deterministic Bifrost key name for one LLMProviderConfig row, so
+    repeated pushes update the same Bifrost key instead of accumulating
+    duplicates."""
+    return f"sentry-agentic-{row_provider_id}"
 
-    We take the current provider document, replace the key value with a
-    literal (``from_env: false``), and PUT it back. This is idempotent —
-    pushing the same value twice is a no-op from Anthropic's perspective.
+
+def _find_key_by_name(provider_name: str, key_name: str, client: httpx.Client) -> Optional[Dict[str, Any]]:
+    try:
+        r = client.get(
+            f"{_bifrost_base_url()}/api/providers/{provider_name}/keys",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        if r.status_code >= 400:
+            return None
+        for k in r.json().get("keys") or []:
+            if k.get("name") == key_name:
+                return k
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Bifrost: could not list keys for %s: %s", provider_name, e)
+    return None
+
+
+# Bifrost picks among every key that lists a requested model using this
+# weight, independent of anything in our own DB -- our "is_default" flag
+# has zero effect on Bifrost's own routing unless we tell it to via this
+# field. Live-confirmed 2026-08-06: an old, exhausted, unmanaged key
+# ("default-anthropic-key", sourced from Bifrost's own env var, weight 1)
+# legitimately lists the same models our managed keys do (model listing
+# reflects account access, not remaining credit), and every key we ever
+# pushed defaulted to weight 0 -- so Bifrost kept preferring the exhausted
+# key for any shared model regardless of which row the UI marked default.
+# High/low here just needs to decisively outrank an unmanaged weight-1
+# key; the exact numbers aren't meaningful beyond that ordering.
+DEFAULT_ROW_WEIGHT = 10
+NON_DEFAULT_ROW_WEIGHT = 1
+
+
+def push_provider_key(
+    provider_name: str,
+    key_value: str,
+    row_provider_id: Optional[str] = None,
+    models: Optional[List[str]] = None,
+    weight: Optional[int] = None,
+) -> bool:
+    """Create or update Sentry Agentic's key entry on ``provider_name``.
+
+    Bug fixed 2026-08-06: this previously GET/mutate/PUT'd the whole
+    provider document at ``/api/providers/{name}`` -- confirmed live
+    that endpoint flatly rejects a "keys" field ("keys are not accepted
+    on this endpoint; use POST/PUT /api/providers/{provider}/keys[/
+    {key_id}] to manage keys"), so every push silently failed and
+    switching the default LLM provider never actually changed which
+    credential Bifrost used for a request. Also explains why GET never
+    showed a "keys" array on the provider document -- keys are a
+    separate sub-resource entirely, not a field of it. The one key that
+    DID work (the original bootstrap default) turned out to be sourced
+    from Bifrost's own ``env.ANTHROPIC_API_KEY`` container env, a
+    leftover of the pre-admin-API architecture this module's own
+    docstring already describes as superseded -- its model list
+    predates newer model releases, which is why requests for those
+    models failed with "could not auto resolve a provider" (no key
+    anywhere had them in its allow-list).
+
+    Keyed by a deterministic name (``_key_name_for_row``) so repeated
+    calls (e.g. every "Set as default" click) update the same Bifrost
+    key instead of accumulating duplicates -- PUT to update if a
+    matching key is found, POST to create if not. ``row_provider_id``
+    defaults to ``provider_name`` for callers that don't have the DB
+    row id handy (keeps this a no-op-safe single Bifrost key per
+    provider_type in that case, matching the old assumption).
+
+    ``weight`` controls Bifrost's own preference among every key that
+    lists a requested model -- see ``DEFAULT_ROW_WEIGHT``/
+    ``NON_DEFAULT_ROW_WEIGHT`` above. Omitted means "don't change it"
+    (preserves whatever's already on an existing key; a brand new key
+    falls to whatever Bifrost itself defaults an unspecified weight to).
 
     Returns True on success. Any failure is logged and returns False so
     the caller's CRUD flow never breaks on a Bifrost hiccup.
     """
     if not provider_name:
         return False
+    key_name = _key_name_for_row(row_provider_id or provider_name)
+    body: Dict[str, Any] = {
+        "name": key_name,
+        "value": {"value": key_value, "env_var": "", "from_env": False},
+    }
+    if models:
+        body["models"] = models
+    if weight is not None:
+        body["weight"] = weight
     with httpx.Client() as client:
-        prov = _get_provider(provider_name, client)
-        if prov is None:
-            return False
-        keys = prov.get("keys") or []
-        if not keys:
-            logger.warning(
-                "Bifrost: provider %s has no keys slot to update", provider_name
-            )
-            return False
-        # Update the first key. Bifrost's current config seeds exactly one
-        # key per provider; multi-key rotation is a separate feature.
-        keys[0]["value"] = {
-            "value": key_value,
-            "env_var": "",
-            "from_env": False,
-        }
+        existing = _find_key_by_name(provider_name, key_name, client)
         try:
-            r = client.put(
-                f"{_bifrost_base_url()}/api/providers/{provider_name}",
-                json=prov,
-                timeout=_DEFAULT_TIMEOUT,
-            )
+            if existing and existing.get("id"):
+                if models is None and existing.get("models"):
+                    # Preserve whatever allow-list is already there when the
+                    # caller isn't explicitly changing it (e.g. a plain key
+                    # rotation shouldn't wipe a previously-synced model list).
+                    body["models"] = existing["models"]
+                if weight is None and existing.get("weight") is not None:
+                    # Same preservation rule as models: don't silently reset
+                    # weight to Bifrost's default on an unrelated update.
+                    body["weight"] = existing["weight"]
+                r = client.put(
+                    f"{_bifrost_base_url()}/api/providers/{provider_name}/keys/{existing['id']}",
+                    json=body,
+                    timeout=_DEFAULT_TIMEOUT,
+                )
+            else:
+                r = client.post(
+                    f"{_bifrost_base_url()}/api/providers/{provider_name}/keys",
+                    json=body,
+                    timeout=_DEFAULT_TIMEOUT,
+                )
             if r.status_code >= 400:
                 logger.warning(
-                    "Bifrost: PUT /api/providers/%s returned %s: %s",
+                    "Bifrost: %s /api/providers/%s/keys returned %s: %s",
+                    "PUT" if existing else "POST",
                     provider_name,
                     r.status_code,
                     r.text[:200],
                 )
                 return False
-            logger.info("Bifrost: pushed updated key for provider %s", provider_name)
-            return True
-        except Exception as e:
-            logger.warning(
-                "Bifrost: PUT /api/providers/%s failed: %s", provider_name, e
+            logger.info(
+                "Bifrost: %s key '%s' for provider %s",
+                "updated" if existing else "created",
+                key_name,
+                provider_name,
             )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Bifrost: key push for %s failed: %s", provider_name, e)
             return False
 
 
@@ -142,21 +227,55 @@ def sync_all_provider_keys() -> Dict[str, bool]:
                 )
                 results[row.provider_id] = False
                 continue
-            results[row.provider_id] = push_provider_key(row.provider_type, value)
+            weight = DEFAULT_ROW_WEIGHT if row.is_default else NON_DEFAULT_ROW_WEIGHT
+            results[row.provider_id] = push_provider_key(
+                row.provider_type, value, row_provider_id=row.provider_id, weight=weight,
+            )
     if results:
         ok = sum(1 for v in results.values() if v)
         logger.info("Bifrost sync: pushed %d/%d provider keys", ok, len(results))
     return results
 
 
-def sync_provider_models(provider_type: str, model_ids: list[str]) -> bool:
-    """Update Bifrost's allow-list of routable models for ``provider_type``.
-
-    GETs the provider document, replaces ``keys[0].models`` with
-    ``model_ids``, and PUTs the result back. Empty lists are skipped —
-    wiping the allow-list to ``[]`` would cause Bifrost to reject every
+def sync_provider_models(
+    provider_type: str, model_ids: list[str], row_provider_id: Optional[str] = None,
+) -> bool:
+    """Update the allow-list on Sentry Agentic's own Bifrost key(s) for
+    ``provider_type`` to ``model_ids``. Empty lists are skipped -- wiping
+    the allow-list to ``[]`` would cause Bifrost to reject every
     subsequent LLM call for that provider, which we never want just
     because an upstream API had a momentary hiccup.
+
+    Bug fixed 2026-08-06: same root cause as push_provider_key -- this
+    tried to GET the provider document and mutate ``keys[0].models`` in
+    place, but Bifrost's ``/api/providers/{name}`` endpoint doesn't
+    expose or accept a "keys" field at all (confirmed: "keys are not
+    accepted on this endpoint; use POST/PUT /api/providers/{provider}/
+    keys[/{key_id}] to manage keys"). Now lists our own keys (by name
+    prefix -- see _key_name_for_row) via the correct sub-resource and
+    PUTs the models list onto each. Only touches keys this module
+    created; leaves any other key (e.g. Bifrost's own bootstrap key)
+    untouched.
+
+    Bug fixed 2026-08-06 (second one, same day -- live-confirmed via a
+    raw GET of /api/providers/anthropic/keys after a "credit balance too
+    low" report despite the working key being marked default): when two
+    DB rows share a ``provider_type`` (e.g. "Anthropic (default)", an
+    exhausted key, and "Sentry", a working one -- both ``provider_type=
+    anthropic``), the caller previously unioned every row's models into
+    one list and this function pushed that SAME union onto EVERY
+    Sentry-Agentic-managed key of that type. That put models the
+    exhausted key never actually had access to onto its own allow-list
+    too, so Bifrost saw multiple keys all claiming to serve e.g.
+    "claude-sonnet-5" and would sometimes route a request to the
+    exhausted one regardless of which row the UI had marked default --
+    intermittent, not fully fixed by the default-provider bug fix alone.
+    ``row_provider_id`` now scopes the PUT to exactly one row's key
+    (``_key_name_for_row(row_provider_id)``) so each key's allow-list
+    only ever lists models that row's own account actually has. Omitting
+    it falls back to the old blanket-apply-to-every-key behavior, kept
+    for callers that genuinely want that (e.g. a single-row provider
+    type).
     """
     if not provider_type:
         return False
@@ -177,44 +296,73 @@ def sync_provider_models(provider_type: str, model_ids: list[str]) -> bool:
         normalized.append(mid)
 
     with httpx.Client() as client:
-        prov = _get_provider(provider_type, client)
-        if prov is None:
-            return False
-        keys = prov.get("keys") or []
-        if not keys:
-            logger.warning(
-                "Bifrost: provider %s has no keys slot to update",
-                provider_type,
-            )
-            return False
-        keys[0]["models"] = normalized
         try:
-            r = client.put(
-                f"{_bifrost_base_url()}/api/providers/{provider_type}",
-                json=prov,
+            r = client.get(
+                f"{_bifrost_base_url()}/api/providers/{provider_type}/keys",
                 timeout=_DEFAULT_TIMEOUT,
             )
             if r.status_code >= 400:
                 logger.warning(
-                    "Bifrost: PUT /api/providers/%s (models) returned %s: %s",
-                    provider_type,
-                    r.status_code,
-                    r.text[:200],
+                    "Bifrost: GET /api/providers/%s/keys returned %s", provider_type, r.status_code,
                 )
                 return False
+            our_keys = [
+                k for k in (r.json().get("keys") or [])
+                if isinstance(k.get("name"), str) and k["name"].startswith("sentry-agentic-")
+            ]
+            if row_provider_id:
+                target_name = _key_name_for_row(row_provider_id)
+                our_keys = [k for k in our_keys if k.get("name") == target_name]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Bifrost: could not list keys for %s: %s", provider_type, e)
+            return False
+
+        if not our_keys:
             logger.info(
-                "Bifrost: synced %d models for provider %s",
-                len(normalized),
+                "Bifrost sync: no Sentry Agentic-managed key found for provider %s%s yet "
+                "(push_provider_key hasn't created one) -- nothing to sync models onto",
                 provider_type,
-            )
-            return True
-        except Exception as e:
-            logger.warning(
-                "Bifrost: PUT /api/providers/%s (models) failed: %s",
-                provider_type,
-                e,
+                f" row {row_provider_id}" if row_provider_id else "",
             )
             return False
+
+        all_ok = True
+        for k in our_keys:
+            try:
+                body: Dict[str, Any] = {"name": k["name"], "value": k.get("value"), "models": normalized}
+                # Bifrost's PUT is a full replace, not a merge (live-
+                # confirmed 2026-08-06: omitting "weight" here silently
+                # reset it to 0 on every catalog resync -- which fires on
+                # every provider CRUD event via _schedule_catalog_resync,
+                # including immediately after set_default_provider had
+                # just set it correctly. That's what made the weight fix
+                # look like it never took effect: it did, for a few
+                # hundred milliseconds, until the next resync clobbered
+                # it). Echo the key's own current weight back so a
+                # models-only sync never touches it.
+                if k.get("weight") is not None:
+                    body["weight"] = k["weight"]
+                r2 = client.put(
+                    f"{_bifrost_base_url()}/api/providers/{provider_type}/keys/{k['id']}",
+                    json=body,
+                    timeout=_DEFAULT_TIMEOUT,
+                )
+                if r2.status_code >= 400:
+                    logger.warning(
+                        "Bifrost: PUT /api/providers/%s/keys/%s (models) returned %s: %s",
+                        provider_type, k["id"], r2.status_code, r2.text[:200],
+                    )
+                    all_ok = False
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Bifrost: models sync for key %s failed: %s", k.get("name"), e)
+                all_ok = False
+
+        if all_ok:
+            logger.info(
+                "Bifrost: synced %d models onto %d Sentry Agentic-managed key(s) for provider %s",
+                len(normalized), len(our_keys), provider_type,
+            )
+        return all_ok
 
 
 async def sync_all_provider_models() -> Dict[str, Any]:
@@ -231,9 +379,12 @@ async def sync_all_provider_models() -> Dict[str, Any]:
     3. Populates ``_MODEL_LIST_CACHE[provider_id]`` in
        ``services.model_registry`` so the UI dropdown reads the same
        list the sync just computed.
-    4. Unions per-provider-type across rows and PUTs that to Bifrost's
-       allow-list via the admin API, so LLM traffic routes for every
-       model the dropdown shows.
+    4. PUTs each row's own model list to that row's own Bifrost key (not
+       a union across every row of the same provider_type -- two rows
+       sharing a provider_type, e.g. two "anthropic" rows on different
+       accounts, must never end up advertising each other's models; see
+       ``sync_provider_models``'s 2026-08-06 docstring note for the
+       incident that came from unioning here).
 
     Because all three surfaces (dropdown cache, live-meta cache, Bifrost
     allow-list) are written in the same pass, they cannot drift.
@@ -316,9 +467,6 @@ async def _do_sync_all_provider_models() -> Dict[str, Any]:
         extras = get_extra_model_ids(provider_type)
         _register_extras(provider_type, extras)
 
-        type_union: List[str] = []
-        type_seen: set = set()
-
         for row_dict in provider_rows:
             row_ids: List[str] = []
             row_seen: set = set()
@@ -365,26 +513,28 @@ async def _do_sync_all_provider_models() -> Dict[str, Any]:
             _MODEL_LIST_CACHE.set(row_dict["provider_id"], row_ids)
             per_row_models[row_dict["provider_id"]] = row_ids
 
-            # Contribute to the per-type union for Bifrost.
-            for mid in row_ids:
-                if mid in type_seen:
-                    continue
-                type_seen.add(mid)
-                type_union.append(mid)
+            # Push straight to THIS row's own Bifrost key -- never union
+            # across rows of the same provider_type first (see
+            # sync_provider_models' 2026-08-06 docstring note: unioning
+            # here is what let an exhausted key's allow-list claim models
+            # it never actually had, so Bifrost would sometimes route a
+            # request to it regardless of which row the UI marked
+            # default).
+            if not row_ids:
+                # Preserve bootstrap: don't overwrite this key's allow-list
+                # with an empty list if this row's discovery failed and
+                # there were no extras or fallback either.
+                bifrost_results[row_dict["provider_id"]] = False
+                continue
 
-        if not type_union:
-            # Preserve bootstrap: don't overwrite Bifrost's allow-list
-            # with an empty list if every row failed and there are no
-            # extras or fallback.
-            bifrost_results[provider_type] = False
-            continue
-
-        bifrost_results[provider_type] = sync_provider_models(provider_type, type_union)
+            bifrost_results[row_dict["provider_id"]] = sync_provider_models(
+                provider_type, row_ids, row_provider_id=row_dict["provider_id"],
+            )
 
     if bifrost_results:
         ok = sum(1 for v in bifrost_results.values() if v)
         logger.info(
-            "Model catalog sync: pushed model lists for %d/%d provider types",
+            "Model catalog sync: pushed model lists for %d/%d provider rows",
             ok,
             len(bifrost_results),
         )

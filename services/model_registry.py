@@ -142,7 +142,7 @@ _CATALOG: Dict[Tuple[str, str], Dict[str, Any]] = {
         "supports_thinking": True,
         "supports_vision": True,
     },
-    ("anthropic", "claude-sonnet-4-20250514"): {
+    ("anthropic", "claude-haiku-4-5-20251001"): {
         "display_name": "Claude Sonnet 4",
         "context_window": 200_000,
         "input_per_m": 3.0,

@@ -39,9 +39,13 @@ exporters:
     const_labels:
       environment: docker
 
-  # Debug logging at warn level — change to "detailed" for local troubleshooting
+  # Minimal debug logging — change to "detailed" for local troubleshooting.
+  # Fixed 2026-08-20: was "warn", not a valid debugexporter verbosity value
+  # (only basic/normal/detailed are) -- the collector failed to start at
+  # all with "unknown metrics level 'warn'", so nothing in this pipeline
+  # ever ran, found while first actually starting --profile observability.
   debug:
-    verbosity: warn
+    verbosity: basic
 
 service:
   pipelines:

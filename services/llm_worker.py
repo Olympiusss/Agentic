@@ -32,6 +32,92 @@ logger = logging.getLogger(__name__)
 DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 MAX_CONCURRENT_LLM_CALLS = int(os.getenv("LLM_MAX_CONCURRENT", "5"))
 
+# Runtime-hardening gap fixed 2026-08-19: llm_call/llm_call_raw used to
+# catch every exception and return an error dict, so ARQ's own
+# retry_jobs=True/max_tries=3 never actually fired -- every LLM failure
+# (rate limit, timeout, transient 5xx) was seen by ARQ as a "successful"
+# job. _MAX_TRIES here is the single source of truth WorkerSettings.max_tries
+# also references, so the retry-classification logic below and ARQ's own
+# retry ceiling can never drift out of sync with each other.
+_MAX_TRIES = 3
+_BACKOFF_BASE_SECONDS = 2.0
+_BACKOFF_MAX_SECONDS = 30.0
+
+
+def _backoff_seconds(job_try: int) -> float:
+    """Exponential backoff delay before the next retry attempt. job_try
+    is ARQ's own 1-indexed attempt counter (ctx['job_try']) -- attempt 1
+    failing waits _BACKOFF_BASE_SECONDS, attempt 2 waits 2x that, etc.,
+    capped at _BACKOFF_MAX_SECONDS so a long losing streak doesn't stall
+    the queue for minutes."""
+    return min(_BACKOFF_BASE_SECONDS * (2 ** (job_try - 1)), _BACKOFF_MAX_SECONDS)
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """True for errors worth retrying with backoff (rate limits, timeouts,
+    connection failures, 5xx) -- false for anything that will just fail
+    identically on retry (bad request, auth, unknown model/param) and
+    would otherwise burn cost and time for no benefit.
+
+    Duck-typed rather than importing every possible provider SDK's
+    exception hierarchy -- this worker's calls can go through the direct
+    Anthropic SDK OR the Bifrost router path (services/llm_router.py,
+    potentially fronting other providers), so checking a common shape
+    (status_code) plus class-name pattern matching covers both without a
+    hard dependency on any one SDK's exact exception classes. Anything
+    unrecognized defaults to "not transient" -- retrying an unknown
+    error indefinitely is worse than surfacing it once via the
+    dead-letter path."""
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code == 429 or status_code >= 500:
+            return True
+        if status_code < 500:
+            return False
+    name = type(exc).__name__
+    if any(marker in name for marker in ("RateLimit", "Timeout", "ConnectionError", "APIConnection", "ServiceUnavailable")):
+        return True
+    if any(marker in name for marker in ("BadRequest", "Authentication", "PermissionDenied", "NotFound", "Validation", "Conflict")):
+        return False
+    return False
+
+
+def _write_dead_letter(
+    *,
+    job_id: Optional[str],
+    function_name: str,
+    error: str,
+    attempts: int,
+    finding_id: Optional[str] = None,
+    investigation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Best-effort persist of a job that exhausted its retry budget (or
+    failed with a non-transient error) -- never raises, since a
+    dead-letter write failure must not mask or replace the original job
+    failure it exists to record. See database/init/17_llm_job_dead_letters.sql."""
+    try:
+        from database.connection import get_db_manager
+        from database.models import LLMJobDeadLetter
+
+        db_manager = get_db_manager()
+        with db_manager.session_scope() as session:
+            session.add(
+                LLMJobDeadLetter(
+                    job_id=job_id,
+                    function_name=function_name,
+                    error=error[:8000],
+                    attempts=attempts,
+                    finding_id=finding_id,
+                    investigation_id=investigation_id,
+                    agent_id=agent_id,
+                    context=context or {},
+                )
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.error("Failed to write dead-letter record for job %s: %s", job_id, e)
+
 
 def _redis_settings() -> RedisSettings:
     url = os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
@@ -172,7 +258,26 @@ async def llm_call(
             except Exception:
                 pass
         error_msg = f"{type(exc).__name__}: {exc}"
+        job_try = ctx.get("job_try", 1)
+        if _is_transient_llm_error(exc) and job_try < _MAX_TRIES:
+            defer = _backoff_seconds(job_try)
+            logger.warning(
+                "llm_call transient failure (attempt %d/%d), retrying in %.1fs: %s",
+                job_try, _MAX_TRIES, defer, error_msg,
+            )
+            from arq.worker import Retry
+
+            raise Retry(defer=defer)
         logger.error("llm_call failed (returning error dict): %s", error_msg)
+        _write_dead_letter(
+            job_id=ctx.get("job_id"),
+            function_name="llm_call",
+            error=error_msg,
+            attempts=job_try,
+            agent_id=agent_id,
+            investigation_id=investigation_id,
+            context={"model": model, "session_id": session_id, "message_count": len(messages)},
+        )
         return {"content": "", "type": "error", "error": error_msg}
 
 
@@ -273,7 +378,26 @@ async def llm_call_raw(
             except Exception:
                 pass
         error_msg = f"{type(exc).__name__}: {exc}"
+        job_try = ctx.get("job_try", 1)
+        if _is_transient_llm_error(exc) and job_try < _MAX_TRIES:
+            defer = _backoff_seconds(job_try)
+            logger.warning(
+                "llm_call_raw transient failure (attempt %d/%d), retrying in %.1fs: %s",
+                job_try, _MAX_TRIES, defer, error_msg,
+            )
+            from arq.worker import Retry
+
+            raise Retry(defer=defer)
         logger.error("llm_call_raw failed (returning error dict): %s", error_msg)
+        _write_dead_letter(
+            job_id=ctx.get("job_id"),
+            function_name="llm_call_raw",
+            error=error_msg,
+            attempts=job_try,
+            agent_id=agent_id,
+            investigation_id=investigation_id,
+            context={"model": model, "message_count": len(messages)},
+        )
         return {
             "content": [],
             "stop_reason": "error",
@@ -697,6 +821,6 @@ class WorkerSettings:
     max_jobs = MAX_CONCURRENT_LLM_CALLS
     job_timeout = 180
     retry_jobs = True
-    max_tries = 3
+    max_tries = _MAX_TRIES
     on_startup = on_startup
     on_shutdown = on_shutdown

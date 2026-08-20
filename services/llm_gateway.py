@@ -162,6 +162,7 @@ class LLMGateway:
         max_tokens: int = 2048,
         timeout: int = 90,
         provider_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Optional[str]:
         """Enqueue a stateless triage call (highest priority)."""
         job = await self._pool.enqueue_job(
@@ -177,6 +178,7 @@ class LLMGateway:
             temperature=None,
             provider_id=provider_id,
             traceparent=self._get_traceparent(),
+            agent_id=agent_id,
             _queue_name=QUEUE_NAME,
         )
         try:
@@ -284,7 +286,7 @@ class LLMGateway:
         messages: List[Dict],
         *,
         session_id: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-haiku-4-5-20251001",
         max_tokens: int = 4096,
         system_prompt: Optional[str] = None,
         enable_thinking: bool = False,
@@ -322,7 +324,7 @@ class LLMGateway:
         self,
         prompt: str,
         *,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-haiku-4-5-20251001",
         max_tokens: int = 2000,
         temperature: float = 0.3,
         timeout: int = 90,

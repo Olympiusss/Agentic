@@ -18,7 +18,7 @@ from secrets_manager import get_secret, set_secret
 # GH #89 — resolve the summarization model via ai_model_configs with a safe
 # fallback to the historical hardcoded default. Defined at module scope so
 # the registry import stays lazy and tests can monkeypatch it trivially.
-_SUMMARIZATION_DEFAULT = "claude-sonnet-4-20250514"
+_SUMMARIZATION_DEFAULT = "claude-haiku-4-5-20251001"
 
 
 def _resolve_summarization_model() -> str:
@@ -167,6 +167,10 @@ If you intend to call multiple tools and there are no dependencies between the t
 Never speculate about data you have not retrieved. If the user references a specific finding, case, or other security entity, you MUST use the appropriate MCP tool to fetch it before answering. Make sure to investigate and retrieve relevant data BEFORE answering questions. Never make any claims about security data before investigating - give grounded and hallucination-free answers.
 </investigate_before_answering>
 
+<no_intermediate_narration>
+Across a multi-tool-call turn, do not narrate what you are about to do or retry ("Let me search for...", "Let me try a different query...", "Let me rephrase that"). Call the tools you need silently and give only the final answer once you have what you need. If a tool call fails or returns nothing useful, do not narrate a retry attempt to the user either -- either try once more silently or state plainly in the final answer that the data isn't available and why, rather than thinking out loud across multiple visible turns. This is both a cost concern (every narrated turn is wasted output tokens) and a UX one (a wall of "let me try again" reads as broken, not thorough).
+</no_intermediate_narration>
+
 <available_mcp_tools>
 You have access to MCP (Model Context Protocol) tools that connect to various security platforms and data sources. The tools are prefixed with the server name (e.g., "sentry-findings_get_finding"). Use these tools to:
 
@@ -198,13 +202,26 @@ When a user mentions an ID or entity (finding, case, IP, hash, domain), ALWAYS u
 <sentinelone_powerquery>
 If a `sentinelone_powerquery` tool is available, use it for Deep Visibility-style questions (process execution, network connections, DNS lookups, file activity). It runs a raw query string against the SentinelOne Singularity Data Lake. Its real parameters are `query`, `start_datetime`, `end_datetime` (both required, ISO 8601 with timezone offset) — compute them with `sentinelone_get_timestamp_range` rather than hand-writing dates. Never run an unbounded query.
 
-Without an explicit `| columns ...` clause the result is just `timestamp, message` (an opaque blob) — always add one. `event.category = "process"` is confirmed valid on this tenant; other exact field names vary by tenant/licensing and have not all been verified. A malformed or legacy (S1QL 1.0-style) field name can close the whole MCP connection, not just error — so don't guess-and-retry rapidly with unfamiliar fields. Probe an unfamiliar field with a small capped query first.
+Without an explicit `| columns ...` clause the result is just `timestamp, message` (an opaque blob) — always add one. A malformed or legacy (S1QL 1.0-style) field name can close the whole MCP connection, not just error — so don't guess-and-retry rapidly with unfamiliar fields. Probe an unfamiliar field with a small capped query first.
+
+Purple AI is permanently unavailable on this tenant (consistent AuthZ failure, re-confirmed repeatedly since Milestone 5 through 2026-08-06) — this is not a transient outage to work around, it is the standing, confirmed state. Do not call `sentinelone_purple_ai` and do not treat it as a fallback path; Deep Visibility via hand-composed `sentinelone_powerquery` is the primary and only method, and the field list below is the actual confirmed ground truth to build queries from — not a guess, not a "common convention," and not something that needs re-deriving per question. Every field below was individually probed and tested live (`data/knowledge/sentinelone/dv_cookbook/field_dictionary.yaml`, `README.md` in the same directory has the full methodology):
+
+| Category | Confirmed fields | Notes |
+|---|---|---|
+| `process` | `event.time`, `endpoint.name`, `process.name`, `process.cmdline` | `event.category = "process"` |
+| `dns` | `event.time`, `endpoint.name`, `event.dns.request` | `event.category = "dns"` |
+| `file` | `event.time`, `endpoint.name`, `file.path` | `event.category = "file"` |
+| `registry` | `event.time`, `endpoint.name`, `registry.keyPath` | `event.category = "registry"` |
+| `network` | none confirmed | No data in the probe window — don't guess a field name here, say so instead |
+| `login` | none confirmed | Same as `network` |
 
 Example (verified working): `event.category = "process" | columns event.time, endpoint.name, process.name, process.cmdline | limit 20`
 
-`sentinelone_purple_ai` is the documented way to get a PowerQuery string generated from natural language rather than hand-composing one — but it is confirmed down on this tenant as a live, recurring finding (last re-checked 2026-07-30; returns an AuthZ error), so do not fall back to it expecting it to work. If a query returns nothing where results are expected, say so and stop rather than guessing at alternate field names or retrying blind.
+Field names outside this table (any `src_proc.*`/`tgt_proc.*`/`SrcProcName`-style variant, a process signing/parent field, a module-load event category, etc.) are **not confirmed on this tenant** — using one is a guess that risks closing the MCP connection, not a safe alternate spelling. If the question needs a field that isn't in the table above, say plainly that it isn't confirmed rather than substituting a plausible-looking name.
 
-For a SentinelOne question that is not Deep-Visibility-shaped (threat/alert count, host lookup, storyline pivot, agent health, CVE traversal, vulnerability listing), a validated retrieval recipe and a much richer, live-verified knowledge base already exist in `data/knowledge/sentinelone/` and `data/agent/` (ontology, coverage matrix, recipes, DV field dictionary, an embedding router, and a grounding/interpretation layer) — none of it is wired into this prompt yet, but consult it before improvising a query, and prefer a documented recipe's exact tool call sequence over a fresh one. In particular, `search_alerts` returns count/pagination fields as `totalCount`/`pageInfo` (camelCase), while `search_vulnerabilities`/`list_vulnerabilities`/`search_misconfigurations` return `total_count`/`page_info` (snake_case) — checking the wrong casing looks like "field not returned" and has caused real, previously-undetected undercounts.
+`data/knowledge/sentinelone/dv_cookbook/` has 11 pre-built, individually-probed hunt templates built entirely from the confirmed fields above (living_off_the_land — 2 templates including encoded-command execution, credential_access, persistence, process_injection, lateral_movement, exfiltration — 2 templates, impact/ransomware, discovery/recon, defense_evasion) — when a question matches one of these patterns, reuse that template's exact `resulting_query` rather than composing a fresh one from scratch; it's already been validated to run without error on this tenant. All are `status: experimental` (not independently triaged for false-positive rate) — say so in the answer, but that's a confidence caveat on the *finding*, not a reason to avoid running the query.
+
+For a SentinelOne question that is not Deep-Visibility-shaped (threat/alert count, host lookup, storyline pivot, agent health, CVE traversal, vulnerability listing), you will usually never see it: a live router intercepts these before this turn starts, executes a validated recipe deterministically, and returns a grounded answer without invoking you at all — see `chat_stream`'s SentinelOne interception block. You only see one of these questions if the router judged its own confidence too low to act (a `fallback` decision) — in that case, the same knowledge base it draws from (`data/knowledge/sentinelone/` and `data/agent/`: ontology, coverage matrix, recipes, DV field dictionary) is still worth consulting before improvising a query, and a documented recipe's exact tool call sequence is still preferable to a fresh one. In particular, `search_alerts` returns count/pagination fields as `totalCount`/`pageInfo` (camelCase), while `search_vulnerabilities`/`list_vulnerabilities`/`search_misconfigurations` return `total_count`/`page_info` (snake_case) — checking the wrong casing looks like "field not returned" and has caused real, previously-undetected undercounts.
 </sentinelone_powerquery>
 
 <recognizing_security_entities>
@@ -1486,7 +1503,7 @@ Provide a structured summary preserving all critical context."""
         self,
         messages: List[Dict],
         system_prompt: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-haiku-4-5-20251001",
         max_context_tokens: int = 180000,
     ) -> tuple:
         """
@@ -1572,7 +1589,7 @@ Provide a structured summary preserving all critical context."""
         self,
         messages: List[Dict],
         system_prompt: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-haiku-4-5-20251001",
         max_context_tokens: int = 180000,
     ) -> tuple:
         """
@@ -3075,6 +3092,414 @@ Provide a structured summary preserving all critical context."""
         if self.use_backend_tools and BACKEND_TOOLS_AVAILABLE:
             self._refresh_skill_tools()
 
+        # Phase 2 SentinelOne grounding wiring: intercept SentinelOne-shaped
+        # questions before the model gets a native tool-calling turn, per
+        # Milestone 6's routing method ("do not drop the model into native
+        # tool-calling over the full tool surface -- that produced the
+        # original 'answered from Sentry findings, not SentinelOne' failure").
+        # Only acts on hard_bound/routed/ambiguous decisions; `fallback` (the
+        # router's own confidence floor, calibrated so real SentinelOne
+        # questions score 0.60-0.90 and unrelated questions score 0.57-0.61)
+        # falls straight through to today's unrestricted behavior, so normal
+        # chat on this 30+-integration platform is unaffected. The whole
+        # block is exception-guarded: a missing router index or any other
+        # pipeline failure must degrade to today's behavior, never crash
+        # the turn.
+        question_text = message if isinstance(message, str) else None
+        if question_text is None and isinstance(message, list):
+            for block in message:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    question_text = block.get("text")
+                    break
+
+        # Phase 3 capability wiring: when the user has explicitly selected
+        # one of the grounded specialist agents (services/soc_agents.py's
+        # AGENT_CONFIGS -- Olympiuss/Triage, Venus/Investigator, Orion/
+        # Threat Hunter, Ariadne/Correlator, Athena/Threat Intel), dispatch
+        # through capabilities/*.py instead of that agent's own native
+        # tool-calling system prompt. Runs BEFORE the generic SentinelOne
+        # recipe interception below since an explicit agent selection is a
+        # more specific signal than the router's own guess. Reporter/Hermes
+        # is deliberately not wired here -- it composes OTHER capabilities'
+        # already-computed outputs (a "save/export" action, not a
+        # single-turn question), not a fit for this per-message
+        # interception; still exception-guarded and falls through to
+        # today's native-tool behavior on any failure, same discipline as
+        # the SentinelOne interception below.
+        if question_text and agent_id in (
+            "triage", "investigator", "threat_hunter", "correlator", "threat_intel", "verifier",
+            "malware_analyst",
+        ):
+            try:
+                from services import sentinelone_entity_extraction as s1_extract
+                from services import sentinelone_recipe_executor as s1_executor
+
+                # Hephaestus/Malware Analyst is deliberately checked OUTSIDE
+                # the is_sentinelone_active() gate below -- unlike every
+                # other capability here, it's pure VirusTotal (hash
+                # reputation, sandbox behavior, similar-files), with no
+                # SentinelOne dependency at all. Gating it on SentinelOne's
+                # own availability would make hash analysis unavailable for
+                # a reason that has nothing to do with it.
+                if agent_id == "malware_analyst":
+                    from capabilities.malware_analyst import run_malware_analysis
+
+                    hash_value = s1_extract.extract_hash(question_text)
+                    if not hash_value:
+                        yield {
+                            "type": "text",
+                            "content": "Which hash should Hephaestus analyze? (MD5, SHA1, or SHA256)",
+                        }
+                        return
+                    outcome = await run_malware_analysis(hash_value)
+                    if outcome.kind == "answered":
+                        yield {
+                            "type": "text",
+                            "content": "\n\n".join(outcome.evidence) + f"\n\n{outcome.assessment}",
+                        }
+                        return
+                    logger.warning("Malware Analyst capability error for hash %s: %s", hash_value, outcome.error)
+
+                if s1_executor.is_sentinelone_active():
+                    if agent_id == "triage":
+                        from capabilities.triage import run_triage
+
+                        alert_id = s1_extract.extract_uuid(question_text)
+                        if not alert_id:
+                            yield {
+                                "type": "text",
+                                "content": "Which alert ID should Olympiuss triage? (a UUID)",
+                            }
+                            return
+                        outcome = await run_triage(alert_id)
+                        if outcome.kind == "answered":
+                            yield {
+                                "type": "text",
+                                "content": "\n\n".join(outcome.evidence) + f"\n\n{outcome.assessment}",
+                            }
+                            return
+                        if outcome.kind == "needs_clarification":
+                            yield {"type": "text", "content": outcome.clarifying_question}
+                            return
+                        logger.warning("Triage capability error for alert %s: %s", alert_id, outcome.error)
+
+                    elif agent_id == "investigator":
+                        from capabilities.investigator import run_investigator
+
+                        alert_id = s1_extract.extract_uuid(question_text)
+                        if not alert_id:
+                            yield {
+                                "type": "text",
+                                "content": "Which alert ID should Venus investigate? (a UUID)",
+                            }
+                            return
+                        outcome = await run_investigator(alert_id)
+                        if outcome.kind == "answered":
+                            yield {
+                                "type": "text",
+                                "content": "\n\n".join(outcome.evidence) + f"\n\n{outcome.assessment}",
+                            }
+                            return
+                        if outcome.kind == "needs_clarification":
+                            yield {"type": "text", "content": outcome.clarifying_question}
+                            return
+                        logger.warning("Investigator capability error for alert %s: %s", alert_id, outcome.error)
+
+                    elif agent_id == "threat_intel":
+                        # Two distinct jobs live under Athena: CVE enrichment
+                        # (run_threat_intel) and artifact/reputation analysis
+                        # of a specific finding's process/network artifacts
+                        # (analyze_storyline_artifacts -- hashes, signed-
+                        # binary verification, IP reputation, the genuine
+                        # SOC-analyst narrative). Bug fixed 2026-08-05: only
+                        # the CVE path was ever wired here, so a real
+                        # question like "analyze the threat artifacts for
+                        # <finding id>" extracted no CVE ID and asked "which
+                        # CVE ID should Athena enrich" -- wrong-domain and
+                        # confusing regardless of what identifier was given,
+                        # because the artifact-analysis capability (built for
+                        # the autonomous synergy pipeline) was never reachable
+                        # from chat at all. A finding/alert ID takes priority
+                        # -- the more common real question -- CVE only when
+                        # no UUID-shaped identifier is present.
+                        uuid_val = s1_extract.extract_uuid(question_text)
+                        cve_id = s1_extract.extract_cve_id(question_text)
+
+                        if uuid_val:
+                            from capabilities.artifact_analysis import analyze_storyline_artifacts
+                            from services.database_data_service import DatabaseDataService
+
+                            svc = DatabaseDataService()
+                            finding_id = f"s1-{uuid_val}"
+                            finding = svc.get_finding(finding_id)
+                            storyline_id = (finding.get("entity_context") or {}).get("storyline_id") if finding else None
+                            if not storyline_id:
+                                yield {
+                                    "type": "text",
+                                    "content": (
+                                        f"I couldn't find a SentinelOne storyline for {finding_id} -- either this "
+                                        "finding doesn't exist in Sentry Agentic yet, or it has no associated "
+                                        "storyline to pull process/network artifacts from."
+                                    ),
+                                }
+                                return
+                            art = await analyze_storyline_artifacts(storyline_id)
+                            if art.kind == "answered":
+                                content = art.narrative or (
+                                    f"{len(art.processes)} process artifact(s), {len(art.network_connections)} "
+                                    f"network artifact(s) found -- verdict: {art.highest_verdict}."
+                                )
+                                yield {"type": "text", "content": content}
+                                return
+                            logger.warning("Artifact analysis capability error for storyline %s: %s", storyline_id, art.error)
+                        elif cve_id:
+                            from capabilities.threat_intel import run_threat_intel
+
+                            outcome = await run_threat_intel(cve_id)
+                            if outcome.kind == "answered":
+                                yield {
+                                    "type": "text",
+                                    "content": "\n\n".join(outcome.evidence) + f"\n\n{outcome.assessment}",
+                                }
+                                return
+                            logger.warning("Threat Intel capability error for %s: %s", cve_id, outcome.error)
+                        else:
+                            yield {
+                                "type": "text",
+                                "content": (
+                                    "Give me either a finding/alert ID (e.g. s1-... or a bare UUID) to analyze its "
+                                    "process and network artifacts -- hashes, signed-binary verification, IP "
+                                    "reputation -- or a CVE ID (e.g. CVE-2024-12345) to enrich."
+                                ),
+                            }
+                            return
+
+                    elif agent_id == "threat_hunter":
+                        from capabilities.threat_hunter import run_threat_hunter
+
+                        # Always called unconfirmed here -- every dv_cookbook
+                        # template is status=experimental (confirmed
+                        # Milestone 3), so a single chat turn cannot satisfy
+                        # "never run an experimental template without
+                        # confirmation" on its own. This surfaces exactly
+                        # which templates Orion would run and asks first,
+                        # rather than silently executing PowerQuery hunts a
+                        # human hasn't reviewed. Turning a follow-up "yes,
+                        # go ahead" into an actual confirmed run needs
+                        # session-level state this interception doesn't have
+                        # yet -- a real, flagged follow-up, not forgotten.
+                        #
+                        # Bug fixed 2026-08-05: this was two stacked
+                        # problems, not one. First, confirmed=False meant a
+                        # direct, interactive chat request ("hunt for X
+                        # right now") ALWAYS short-circuited to a "needs
+                        # confirmation" refusal -- but every dv_cookbook
+                        # template is read-only (a Deep Visibility
+                        # PowerQuery search, no containment/response
+                        # action), so the experimental-template gate is a
+                        # data-quality flag, not a safety one; a human
+                        # explicitly asking Orion to hunt right now IS the
+                        # confirmation the gate exists to collect. Second,
+                        # even WITH confirmed=True there was no handling
+                        # for outcome.kind == "answered" at all -- real hunt
+                        # hits were silently dropped, falling through to a
+                        # bare warning log no user ever saw. Every
+                        # experimental template used is still called out
+                        # explicitly below so an analyst knows to sanity-
+                        # check the hits, rather than silently upgrading
+                        # confidence.
+                        outcome = await run_threat_hunter(confirmed=True)
+                        if outcome.kind == "answered":
+                            experimental_ids = [h.template_id for h in outcome.hits if h.status != "stable"]
+                            lines = []
+                            for h in outcome.hits:
+                                if h.error:
+                                    lines.append(f"- {h.template_id} [{h.status}]: error -- {h.error}")
+                                    continue
+                                mitre = ", ".join(t.get("technique_id", "?") for t in h.mitre) or "n/a"
+                                count = h.match_count if h.match_count is not None else 0
+                                lines.append(f"- {h.template_id} [{h.status}]: {count} match(es) (MITRE: {mitre})")
+                            caveat = (
+                                f"\n\nNote: {len(experimental_ids)} of {len(outcome.hits)} template(s) run are "
+                                "experimental/unreviewed -- verify hits before treating them as confirmed findings."
+                                if experimental_ids else ""
+                            )
+                            yield {
+                                "type": "text",
+                                "content": f"Hunt results, {outcome.window_label}:\n" + "\n".join(lines) + caveat,
+                            }
+                            return
+                        if outcome.kind == "needs_confirmation":
+                            yield {"type": "text", "content": outcome.error}
+                            return
+                        logger.warning("Threat Hunter capability error: %s", outcome.error)
+
+                    elif agent_id == "correlator":
+                        from capabilities.correlator import run_correlator
+
+                        outcome = await run_correlator()
+                        if outcome.kind == "answered":
+                            # Lead with the answer, not the raw cluster dump
+                            # (explicit user feedback, 2026-08-05: "output
+                            # has much unneeded context, it should go
+                            # straight to responding"). Assessment first,
+                            # supporting cluster detail after and capped --
+                            # a real correlator run can produce dozens of
+                            # clusters, and dumping all of them ahead of the
+                            # actual conclusion buried the answer under a
+                            # wall of bracketed IDs.
+                            _MAX_CLUSTER_LINES = 8
+                            shown = outcome.clusters[:_MAX_CLUSTER_LINES]
+                            cluster_lines = "\n".join(
+                                f"- [{c.kind}] {c.key}: {len(c.alert_ids)} alert(s) across {', '.join(c.hosts) or 'unknown host(s)'}"
+                                for c in shown
+                            )
+                            if len(outcome.clusters) > _MAX_CLUSTER_LINES:
+                                cluster_lines += f"\n- ...and {len(outcome.clusters) - _MAX_CLUSTER_LINES} more cluster(s)"
+                            content = outcome.assessment
+                            if cluster_lines:
+                                content += f"\n\nSupporting clusters:\n{cluster_lines}"
+                            yield {"type": "text", "content": content}
+                            return
+                        logger.warning("Correlator capability error: %s", outcome.error)
+
+                    elif agent_id == "verifier":
+                        # Argus re-checks the dashboard's cached numbers
+                        # against fresh live queries -- doesn't need a
+                        # specific alert/CVE ID extracted from the question
+                        # like the other agents above, it just always
+                        # verifies whatever is currently reported.
+                        from capabilities.verification import format_results, verify_against_dashboard
+
+                        results = await verify_against_dashboard()
+                        yield {"type": "text", "content": format_results(results)}
+                        return
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Capability dispatch for agent '%s' failed, falling through to "
+                    "normal chat flow: %s", agent_id, e, exc_info=True,
+                )
+
+        # Threat-lookup interception (explicit user request, 2026-08-05:
+        # "every external action must be able to be retrieve[d] via the
+        # interface" -- capabilities/synergy.py's Zeus pipeline fires an
+        # email notification for every new SentinelOne threat, but until
+        # this block nothing about that notification, or the fuller
+        # multi-agent analysis behind it, was queryable from chat).
+        # Answers questions about Sentry Agentic's OWN internal Finding store,
+        # not a SentinelOne retrieval question, so it doesn't go through
+        # the SentinelOne router below (different data source entirely).
+        # Keyword-gated, not the calibrated embedding router -- same tier
+        # of routing as the agent-selected capabilities' own
+        # extract_uuid/extract_cve_id checks above.
+        #
+        # Two entry points: if the user has explicitly selected Hermes
+        # <Reporter> (this is his domain -- he's the one whose name is on
+        # the notification emails), EVERY message he gets tries
+        # threat-lookup first and falls back to a named referral rather
+        # than a bare failure ("every external action must be retrievable
+        # via the interface... if the further questions asked is not
+        # retrievable, it should refer the user to the right agent").
+        # With no agent (or a different one) selected, stays keyword-gated
+        # so it doesn't steal messages meant for the model's normal flow
+        # or another agent's own capability dispatch above.
+        if question_text and agent_id == "reporter":
+            try:
+                from capabilities.threat_lookup import answer_as_hermes
+
+                outcome = await answer_as_hermes(question_text)
+                if outcome.kind == "answered":
+                    yield {"type": "text", "content": outcome.answer}
+                    return
+                if outcome.kind == "needs_clarification":
+                    yield {"type": "text", "content": f"Hermes <Reporter> here -- {outcome.clarifying_question}"}
+                    return
+                logger.warning("Hermes threat lookup capability error: %s", outcome.error)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Hermes dispatch failed, falling through to normal chat flow: %s", e, exc_info=True)
+        elif question_text:
+            try:
+                from capabilities.threat_lookup import answer_threat_query, is_threat_lookup_query
+
+                if is_threat_lookup_query(question_text):
+                    outcome = await answer_threat_query(question_text)
+                    if outcome.kind == "answered":
+                        yield {"type": "text", "content": outcome.answer}
+                        return
+                    if outcome.kind == "needs_clarification":
+                        yield {"type": "text", "content": outcome.clarifying_question}
+                        return
+                    logger.warning("Threat lookup capability error: %s", outcome.error)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Threat lookup dispatch failed, falling through to normal chat flow: %s", e, exc_info=True)
+
+        if question_text:
+            try:
+                from services import sentinelone_recipe_executor as s1_executor
+
+                if s1_executor.is_sentinelone_active():
+                    from services import sentinelone_grounding_service as s1_grounding
+                    from services import sentinelone_router_service as s1_router
+
+                    # route() runs a local ONNX embedding inference
+                    # (fastembed) synchronously -- CPU-bound, not I/O, so it
+                    # blocks the asyncio event loop for its duration if
+                    # called directly. Offload to a worker thread so this
+                    # doesn't stall every other concurrent request on the
+                    # process while a SentinelOne question is being routed.
+                    decision = await asyncio.to_thread(s1_router.route, question_text)
+
+                    if decision.question_class == "sentry_internal":
+                        pass  # the one row where Sentry's own findings ARE
+                        # correct -- let the model's existing backend tools
+                        # handle it normally, no interception
+                    elif decision.decision_type in ("hard_bound", "routed"):
+                        gate = s1_grounding.validate_query_or_refuse(decision)
+                        if gate.allowed:
+                            outcome = await s1_executor.execute(
+                                decision.question_class, question_text
+                            )
+                            if outcome.kind == "answered":
+                                yield {"type": "text", "content": outcome.answer}
+                                return
+                            if outcome.kind == "needs_clarification":
+                                yield {
+                                    "type": "text",
+                                    "content": outcome.clarifying_question,
+                                }
+                                return
+                            logger.warning(
+                                "SentinelOne recipe execution error for '%s': %s "
+                                "-- falling through to normal model flow",
+                                decision.question_class,
+                                outcome.error,
+                            )
+                        else:
+                            yield {
+                                "type": "text",
+                                "content": s1_grounding.format_refusal_answer(
+                                    gate.reason, gate.closest_validated_path
+                                ),
+                            }
+                            return
+                    elif decision.decision_type == "ambiguous":
+                        yield {
+                            "type": "text",
+                            "content": s1_grounding.format_disambiguation_answer(
+                                decision.disambiguation_options
+                            ),
+                        }
+                        return
+                    # decision.decision_type == "fallback": no interception,
+                    # fall through to normal model+tool-calling flow below
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "SentinelOne routing interception failed, falling through "
+                    "to normal chat flow: %s",
+                    e,
+                    exc_info=True,
+                )
+
         try:
             messages = []
 
@@ -3185,6 +3610,12 @@ Provide a structured summary preserving all critical context."""
             start_time = asyncio.get_event_loop().time()
             last_tool_calls = []  # Track recent tool calls to detect loops
             iteration_delays = []  # Track delays for rate limiting
+            # Summed across every iteration of this turn (a turn can involve
+            # several tool-call round-trips, each with its own final_message
+            # usage) so the "usage" chunk yielded at the end represents the
+            # whole visible assistant turn, not just its last API call.
+            turn_input_tokens = 0
+            turn_output_tokens = 0
 
             logger.debug(
                 f"🚀 Starting stream iterations (max: {max_iterations}, max_time: {max_processing_time}s)"
@@ -3335,6 +3766,9 @@ Provide a structured summary preserving all critical context."""
                         (asyncio.get_event_loop().time() - _stream_started) * 1000
                     )
                     _fm_usage = getattr(final_message, "usage", None)
+                    if _fm_usage is not None:
+                        turn_input_tokens += getattr(_fm_usage, "input_tokens", 0) or 0
+                        turn_output_tokens += getattr(_fm_usage, "output_tokens", 0) or 0
                     await asyncio.to_thread(
                         self._persist_interaction,
                         session_id=session_id,
@@ -3411,7 +3845,10 @@ Provide a structured summary preserving all critical context."""
                     if len(last_tool_calls) > 5:
                         last_tool_calls.pop(0)
 
-                    yield {"type": "text", "content": "\n\n[Processing tools...]\n"}
+                    # No "[Processing tools...]" narration to the user here
+                    # (removed post-Phase-2): it had no special frontend
+                    # handling, just rendered as plain assistant text --
+                    # pure clutter and wasted tokens on every tool-use turn.
 
                     # Route each tool call to the correct processor (backend or MCP)
                     tool_results = await self._process_mixed_tool_use(
@@ -3436,6 +3873,16 @@ Provide a structured summary preserving all critical context."""
                     logger.info(
                         f"✅ Stream complete after {iteration} iteration(s) in {total_elapsed:.1f}s (rate limiting: {total_delay:.1f}s)"
                     )
+                    # Per-message token usage (post-Phase-2): summed across
+                    # every iteration of this turn, not just the final API
+                    # call, so it reflects what the whole visible assistant
+                    # bubble actually cost -- including any tool-call
+                    # round-trips the user never sees narrated individually.
+                    yield {
+                        "type": "usage",
+                        "input_tokens": turn_input_tokens,
+                        "output_tokens": turn_output_tokens,
+                    }
                     break
 
         except Exception as e:

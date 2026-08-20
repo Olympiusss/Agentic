@@ -6,18 +6,60 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies. curl is required by the HEALTHCHECK below
+# -- confirmed live 2026-08-09 this was missing here (present in
+# Dockerfile.backend's list but never added here), which would have made
+# this container report unhealthy unconditionally regardless of the
+# daemon's actual state.
+#
+# Node.js (npx) and uv (uvx) are required at runtime the same way as
+# Dockerfile.backend -- the daemon polls SentinelOne/EDR data through the
+# same mcp-config.json-spawned servers (confirmed missing here 2026-08-16,
+# same "[Errno 2] No such file or directory" failure mode as the backend
+# container had before this fix).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    curl \
+    ca-certificates \
+    gnupg \
+    git \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Explicit, shared uv cache -- NOT the default (~/.cache/uv, per-user).
+# Same fix as Dockerfile.backend, confirmed live 2026-08-18 there: the
+# pre-warm RUN below executes as root (before USER soc further down), so
+# a default-location cache would land in /root/.cache/uv while the actual
+# daemon process runs as the unprivileged `soc` user with a different
+# HOME -- its own uvx invocation would still hit a cold cache. /app gets
+# chown'd to soc:soc below (the existing step), so this path ends up
+# correctly owned for the runtime user too.
+ENV UV_CACHE_DIR=/app/.cache/uv
+
+# Pre-warm uv's cache for purple-mcp (the SentinelOne MCP server) at build
+# time, not first container start. Confirmed live 2026-08-17 (backend
+# container): even with git present, `uvx --from git+https://...` takes
+# 90+ seconds EVERY cold invocation -- resolving the git ref and rebuilding
+# purple-mcp's own heavy dependency chain (numpy, pandas, cryptography,
+# ...) from source. Whatever timeout governs MCP server startup is shorter
+# than that, so the daemon could never connect via this path on a cold
+# cache no matter how many times it restarts. `|| true` because only the
+# cache side-effect matters, not this command's own exit code (missing
+# real PURPLEMCP_CONSOLE_TOKEN/BASE_URL at build time is expected).
+RUN uvx --from git+https://github.com/Sentinel-One/purple-mcp.git@v0.7.0 purple-mcp --help || true
 
 # Copy requirements + editable-install sources first for better caching.
-# requirements.txt references `-e ./deeptempo-core` and `-e ./mcp-servers`,
-# so those directories must exist at pip-install time.
+# requirements.txt references `-e ./sentry-core`, `-e ./mcp-servers`, and
+# `-e ./mempalace` -- all three directories must exist at pip-install time
+# (confirmed live 2026-08-09: mempalace was missing here entirely and
+# broke the build with "not a valid editable requirement").
 COPY requirements.txt .
-COPY deeptempo-core/ ./deeptempo-core/
+COPY sentry-core/ ./sentry-core/
 COPY mcp-servers/ ./mcp-servers/
+COPY mempalace/ ./mempalace/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -32,12 +74,20 @@ USER soc
 
 # Expose ports
 # 8081 - Webhook ingestion
-# 9090 - Metrics/health
-EXPOSE 8081 9090
+# 9090 - Prometheus /metrics (OTEL PrometheusMetricReader)
+# 9091 - Health /health, /health/live, /health/ready, /status
+EXPOSE 8081 9090 9091
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9090/health || exit 1
+# Bug fixed 2026-08-19: this pointed at port 9090 (Prometheus metrics,
+# not an HTTP JSON /health path -- nothing there ever answers a plain GET
+# /health) for as long as this HEALTHCHECK instruction has existed, so
+# the container reported "unhealthy" in `docker ps` unconditionally
+# regardless of actual daemon health. daemon/metrics.py's MetricsServer
+# serves /health/ready on 9091 -- hits that now, matching the real
+# health-check port this whole time.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:9091/health/ready || exit 1
 
 # Default command
 CMD ["python", "-m", "daemon.main"]

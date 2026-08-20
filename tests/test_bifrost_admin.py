@@ -70,6 +70,8 @@ def test_sync_provider_models_dedupes_and_preserves_order():
     provider_doc = {
         "keys": [
             {
+                "id": "key-1",
+                "name": "sentry-agentic-anthropic",
                 "value": {"value": "sk-...", "env_var": "", "from_env": False},
                 "models": ["old"],
             }
@@ -92,11 +94,41 @@ def test_sync_provider_models_dedupes_and_preserves_order():
 
     put = [c for c in rec.calls if c["method"] == "PUT"][0]
     body = put["kwargs"]["json"]
-    assert body["keys"][0]["models"] == [
+    assert body["models"] == [
         "claude-opus-4-7",
         "claude-sonnet-4-6",
         "claude-haiku-3-5",
     ]
+
+
+def test_sync_provider_models_preserves_existing_weight():
+    """Regression test for a live incident (2026-08-06): Bifrost's PUT is a
+    full replace, not a merge, so omitting "weight" here silently reset it
+    to 0 on every catalog resync -- which fires on every provider CRUD
+    event, including immediately after set_default_provider had just set
+    it correctly via _sync_default_weights. That made the weight fix look
+    like it never took effect: it did, for a moment, until the very next
+    resync clobbered it back to 0."""
+    provider_doc = {
+        "keys": [
+            {
+                "id": "key-1",
+                "name": "sentry-agentic-sentry",
+                "value": {"value": "sk-...", "env_var": "", "from_env": False},
+                "models": ["old"],
+                "weight": 10,
+            }
+        ]
+    }
+    rec = _RecordingClient(get_payload=provider_doc)
+
+    with patch.object(bifrost_admin.httpx, "Client", lambda: rec):
+        ok = bifrost_admin.sync_provider_models("anthropic", ["claude-opus-4-7"])
+    assert ok is True
+
+    put = [c for c in rec.calls if c["method"] == "PUT"][0]
+    body = put["kwargs"]["json"]
+    assert body["weight"] == 10
 
 
 def test_sync_provider_models_returns_false_when_provider_missing():
@@ -226,8 +258,8 @@ def test_sync_all_populates_dropdown_cache_and_bifrost_allowlist(monkeypatch):
     # Capture Bifrost PUTs.
     pushed = {}
 
-    def fake_push(provider_type, model_ids):
-        pushed[provider_type] = list(model_ids)
+    def fake_push(provider_type, model_ids, row_provider_id=None):
+        pushed[row_provider_id or provider_type] = list(model_ids)
         return True
 
     monkeypatch.setattr(ba, "sync_provider_models", fake_push)
@@ -237,8 +269,8 @@ def test_sync_all_populates_dropdown_cache_and_bifrost_allowlist(monkeypatch):
 
     result = asyncio.run(ba.sync_all_provider_models())
 
-    # Bifrost allow-list — live list + extras, unioned.
-    assert pushed["anthropic"] == [
+    # Bifrost allow-list — live list + extras, pushed to this row's own key.
+    assert pushed["ant-default"] == [
         "claude-opus-4-7",
         "claude-haiku-4-5-20251001",
         "claude-3-5-haiku-20241022",
@@ -251,8 +283,8 @@ def test_sync_all_populates_dropdown_cache_and_bifrost_allowlist(monkeypatch):
         "claude-haiku-4-5-20251001",
         "claude-3-5-haiku-20241022",
     ]
-    # Return shape includes both views.
-    assert result["bifrost"]["anthropic"] is True
+    # Return shape includes both views, keyed by provider row id.
+    assert result["bifrost"]["ant-default"] is True
     assert result["models_by_provider"]["ant-default"] == [
         "claude-opus-4-7",
         "claude-haiku-4-5-20251001",
@@ -261,9 +293,14 @@ def test_sync_all_populates_dropdown_cache_and_bifrost_allowlist(monkeypatch):
     _reset_registry()
 
 
-def test_sync_all_unions_across_same_type_providers(monkeypatch):
-    """Two anthropic providers with different keys — per-row caches hold
-    each row's own list; Bifrost allow-list is the union."""
+def test_sync_all_never_unions_across_same_type_providers(monkeypatch):
+    """Two anthropic providers with different keys (e.g. one exhausted, one
+    not) -- each row's own list must go to that row's own Bifrost key,
+    never a union of both. Regression test for a live incident
+    (2026-08-06): unioning here meant the exhausted row's key ended up
+    advertising models it never actually had access to, so Bifrost would
+    sometimes route a request to it even though the UI marked the other
+    row default."""
     from services import bifrost_admin as ba
 
     _reset_registry()
@@ -283,8 +320,8 @@ def test_sync_all_unions_across_same_type_providers(monkeypatch):
 
     pushed = {}
 
-    def fake_push(provider_type, model_ids):
-        pushed[provider_type] = list(model_ids)
+    def fake_push(provider_type, model_ids, row_provider_id=None):
+        pushed[row_provider_id or provider_type] = list(model_ids)
         return True
 
     monkeypatch.setattr(ba, "sync_provider_models", fake_push)
@@ -304,12 +341,18 @@ def test_sync_all_unions_across_same_type_providers(monkeypatch):
         "claude-opus-4-7",
         "claude-sonnet-4-6",
     ]
-    # Union for Bifrost (order preserved, deduped).
-    assert pushed["anthropic"] == [
+    # Each row's Bifrost key only ever sees that row's own models -- no
+    # cross-contamination between "ant-dev" and "ant-prod".
+    assert pushed["ant-dev"] == [
         "claude-opus-4-7",
         "claude-haiku-4-5-20251001",
+    ]
+    assert pushed["ant-prod"] == [
+        "claude-opus-4-7",
         "claude-sonnet-4-6",
     ]
+    assert "claude-sonnet-4-6" not in pushed["ant-dev"]
+    assert "claude-haiku-4-5-20251001" not in pushed["ant-prod"]
     _reset_registry()
 
 
@@ -330,8 +373,8 @@ def test_sync_all_falls_back_when_all_fetches_fail(monkeypatch):
 
     pushed = {}
 
-    def fake_push(provider_type, model_ids):
-        pushed[provider_type] = list(model_ids)
+    def fake_push(provider_type, model_ids, row_provider_id=None):
+        pushed[row_provider_id or provider_type] = list(model_ids)
         return True
 
     monkeypatch.setattr(ba, "sync_provider_models", fake_push)
@@ -346,7 +389,7 @@ def test_sync_all_falls_back_when_all_fetches_fail(monkeypatch):
     row_list = _MODEL_LIST_CACHE.get("ant-default")
     assert "claude-opus-4-7" in row_list  # from bootstrap
     assert "legacy-1" in row_list  # extras applied even on failure
-    assert "legacy-1" in pushed["anthropic"]
+    assert "legacy-1" in pushed["ant-default"]
     _reset_registry()
 
 

@@ -12,6 +12,22 @@ Usage:
 
     api_key = get_secret("CLAUDE_API_KEY")
     set_secret("CLAUDE_API_KEY", "sk-ant-...")
+
+Known limitation, documented explicitly rather than left silent (runtime-
+hardening gap audit, 2026-08-19): this store is a SINGLE flat namespace --
+get(key)/set(key, value) take a bare string key with no tenant/client
+scoping, ACL, or namespace argument. Any code path in this process can
+read any secret stored here, regardless of which client's data it's
+currently handling. This matters concretely for services/alienvault_
+central_service.py's per-deployment client secrets (one JSON blob under
+ALIENVAULT_DEPLOYMENT_SECRETS_JSON, distinct values per client but no
+runtime enforcement stopping code handling Client A's finding from
+reading Client B's secret). A real fix -- per-tenant secret scoping with
+enforced access control -- is a materially bigger project (auth-based
+sandboxing, not a config change) and was explicitly out of scope for the
+defense-in-depth pass that added the audit-log line in
+_deployment_credentials(); that line makes cross-client secret usage
+detectable after the fact, it does not prevent it.
 """
 
 import json

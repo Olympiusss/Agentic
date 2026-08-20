@@ -353,6 +353,23 @@ export default function Login() {
         setShowMfa(true);
         setMfaCode('');
         setError('Enter your 2-factor authentication code.');
+      } else if (err.response?.status === 429) {
+        // Bug found live 2026-08-20: the rate limiter (backend/api/auth.py,
+        // 5/minute) returns {"error": "..."}, not {"detail": "..."} -- the
+        // fallback below only ever checked .detail, so a rate-limited login
+        // silently rendered as "Invalid credentials. Please check username
+        // and password," telling a user their real, correct password was
+        // wrong when the actual problem was unrelated and temporary.
+        setError(
+          err.response?.data?.error ||
+          'Too many login attempts. Please wait a minute and try again.'
+        );
+      } else if (!err.response) {
+        // No response at all (network failure, CORS block, backend
+        // unreachable) previously fell into the same generic "Invalid
+        // credentials" message as a real wrong-password 401 -- genuinely
+        // misleading, since the credentials were never actually checked.
+        setError('Could not reach the server. Check your connection and try again.');
       } else {
         setError(err.response?.data?.detail || 'Invalid credentials. Please check username and password.');
       }

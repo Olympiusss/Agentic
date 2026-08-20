@@ -89,6 +89,7 @@ _SECRET_FIELDS: Mapping[str, tuple[str, ...]] = {
     "github": ("token",),
     "virustotal": ("api_key",),
     "alienvault-otx": ("api_key",),
+    "alienvault-central": ("client_secret",),
     "shodan": ("api_key",),
     "misp": ("api_key",),
     "gcp-threat-intel": ("api_key",),

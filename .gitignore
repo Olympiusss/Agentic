@@ -1,3 +1,24 @@
+# Phase 3 capability runtime outputs (session exports, 24h briefs) --
+# generated at runtime, never committed.
+/outputs/reports/*
+/outputs/briefs/*
+!/outputs/reports/.gitkeep
+!/outputs/briefs/.gitkeep
+
+# soc_dashboard/ is a separate, standalone app (own venv/package.json/
+# railway.toml) that happens to live inside this working directory --
+# not part of Sentry Agentic, excluded from this repo's history.
+/soc_dashboard/
+
+# Generated test/build artifacts, not source.
+tests/_last_capability_harness_run.md
+frontend/tsc_full_out.txt
+
+# Microsoft Office lock files.
+~$*.docx
+~$*.xlsx
+~$*.pptx
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

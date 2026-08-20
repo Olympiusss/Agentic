@@ -6,6 +6,7 @@ Handles email notifications with HTML templates.
 
 import logging
 import smtplib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Optional
@@ -13,6 +14,18 @@ from datetime import datetime
 import os
 
 logger = logging.getLogger(__name__)
+
+# Bug fixed 2026-08-06: a single send_email() call had zero retry -- one
+# transient SMTP rejection (live-confirmed: Gmail responding 421 "4.3.0
+# Temporary System Problem, Try again later" under the unusually high
+# connection volume from that day's daemon restarts) silently and
+# permanently dropped that notification, with nothing anywhere to catch
+# or retry it. SMTP 4xx codes are explicitly transient per RFC 5321 (vs.
+# 5xx, permanent) -- retry those a couple of times with a short backoff;
+# anything else (bad auth, unknown recipient, etc.) still fails fast
+# since retrying a permanent error just delays the same failure.
+_SEND_RETRY_ATTEMPTS = 3
+_SEND_RETRY_BACKOFF_SECONDS = 3
 
 
 class EmailService:
@@ -99,17 +112,34 @@ class EmailService:
             if bcc_addresses:
                 all_recipients.extend(bcc_addresses)
             
-            # Send email
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                if self.use_tls:
-                    server.starttls()
-                if self.smtp_user and self.smtp_password:
-                    server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg, self.from_address, all_recipients)
-            
-            logger.info(f"Email sent to {', '.join(to_addresses)}")
-            return True
-        
+            # Send email -- retries on transient (4xx) SMTP errors only;
+            # see _SEND_RETRY_ATTEMPTS' module-level comment.
+            last_error: Optional[Exception] = None
+            for attempt in range(1, _SEND_RETRY_ATTEMPTS + 1):
+                try:
+                    with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                        if self.use_tls:
+                            server.starttls()
+                        if self.smtp_user and self.smtp_password:
+                            server.login(self.smtp_user, self.smtp_password)
+                        server.send_message(msg, self.from_address, all_recipients)
+                    logger.info(f"Email sent to {', '.join(to_addresses)}")
+                    return True
+                except (smtplib.SMTPResponseException, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected) as e:
+                    code = getattr(e, "smtp_code", None)
+                    is_transient = code is None or 400 <= code < 500
+                    last_error = e
+                    if not is_transient or attempt == _SEND_RETRY_ATTEMPTS:
+                        raise
+                    logger.warning(
+                        f"Transient SMTP error (attempt {attempt}/{_SEND_RETRY_ATTEMPTS}), "
+                        f"retrying in {_SEND_RETRY_BACKOFF_SECONDS}s: {e}"
+                    )
+                    time.sleep(_SEND_RETRY_BACKOFF_SECONDS)
+            # Unreachable (loop always returns or raises), but keeps type
+            # checkers happy and documents intent if that ever changes.
+            raise last_error or RuntimeError("send_email: exhausted retries with no captured error")
+
         except Exception as e:
             logger.error(f"Error sending email: {e}")
             return False

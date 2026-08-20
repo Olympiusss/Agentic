@@ -238,10 +238,37 @@ Tools: `shodan_search_ip`, `shodan_get_host_info`, `shodan_search_exploits`
 ### AlienVault OTX
 
 ```bash
-OTX_API_KEY="your_api_key"
+ALIENVAULT_OTX_API_KEY="your_api_key"
 ```
 
-Tools: `otx_get_indicator`, `otx_search_pulses`, `otx_get_pulse`
+Tools: `otx_check_ip`, `otx_check_domain`, `otx_check_hash`
+
+As of 2026-08-12, OTX's community pulse count for hashes and IPs is also
+blended directly into `capabilities/reputation.py`'s `check_hash`/
+`check_ip` (alongside VirusTotal and AbuseIPDB) -- used by both Athena
+`<Threat Intel>`'s storyline artifact analysis and Hephaestus
+`<Malware Analyst>`'s indicator-first hash analysis, not just reachable
+as a standalone MCP tool.
+
+### AlienVault Central (USM Anywhere)
+
+A different AlienVault product from OTX above -- the multi-client SIEM
+platform, not the threat-intel feed. Configured via Settings ->
+Integrations (subdomain + Client ID are non-secret; only Client Secret
+is stored encrypted):
+
+```bash
+ALIENVAULT_CENTRAL_CLIENT_SECRET="your_client_secret"
+```
+
+Non-secret fields (`subdomain`, `client_id`) are read via
+`core.config.get_integration_config('alienvault-central')`, not env
+vars -- see `services/alienvault_central_service.py`.
+
+Used by `services/client_registry_service.py` to detect, per client,
+whether they have SIEM coverage (an AlienVault deployment), EDR
+coverage (a SentinelOne site), or both -- surfaced on the `/clients`
+page and available to the analyst-facing `/api/chat` contract.
 
 ### MISP
 

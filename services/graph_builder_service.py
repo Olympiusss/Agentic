@@ -260,65 +260,75 @@ class GraphBuilderService:
     def _extract_entities(self, entity_context: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """
         Extract entities from entity context.
-        
+
+        Every poller in daemon/poller.py (Splunk, CrowdStrike, SentinelOne)
+        writes PLURAL, list-valued keys -- src_ips/dest_ips/hostnames/
+        usernames -- never the singular scalar keys (src_ip/dst_ip/
+        hostname/user) this method checked for previously. That mismatch
+        meant _extract_entities silently returned {} for every real
+        finding ever ingested, and the Entity Graph tab rendered empty
+        for every data source, not just one (confirmed live, 2026-08-04).
+        Fixed to read the plural shape every source actually produces --
+        one node per non-empty list item -- while still honoring the
+        singular keys too, in case a webhook or future source uses them.
+
         Args:
             entity_context: Entity context dictionary
-            
+
         Returns:
             Dictionary of entity_id -> entity_data
         """
         entities = {}
-        
-        # Source IP
-        if 'src_ip' in entity_context and entity_context['src_ip']:
-            entity_id = f"ip-{entity_context['src_ip']}"
-            entities[entity_id] = {
-                'label': entity_context['src_ip'],
-                'type': 'ip',
-                'role': 'source'
-            }
-        
-        # Destination IP
-        if 'dst_ip' in entity_context and entity_context['dst_ip']:
-            entity_id = f"ip-{entity_context['dst_ip']}"
-            entities[entity_id] = {
-                'label': entity_context['dst_ip'],
-                'type': 'ip',
-                'role': 'destination'
-            }
-        
-        # Hostname
-        if 'hostname' in entity_context and entity_context['hostname']:
-            entity_id = f"host-{entity_context['hostname']}"
-            entities[entity_id] = {
-                'label': entity_context['hostname'],
-                'type': 'hostname'
-            }
-        
-        # User
-        if 'user' in entity_context and entity_context['user']:
-            entity_id = f"user-{entity_context['user']}"
-            entities[entity_id] = {
-                'label': entity_context['user'],
-                'type': 'user'
-            }
-        
+
+        def _add_ip(ip: Any, role: str) -> None:
+            if not ip:
+                return
+            entities[f"ip-{ip}"] = {'label': ip, 'type': 'ip', 'role': role}
+
+        def _add_host(host: Any) -> None:
+            if not host:
+                return
+            entities[f"host-{host}"] = {'label': host, 'type': 'hostname'}
+
+        def _add_user(user: Any) -> None:
+            if not user:
+                return
+            entities[f"user-{user}"] = {'label': user, 'type': 'user'}
+
+        # IPs -- plural (real shape) and singular (legacy/defensive) forms.
+        for ip in entity_context.get('src_ips') or []:
+            _add_ip(ip, 'source')
+        for ip in (entity_context.get('dest_ips') or entity_context.get('dst_ips') or []):
+            _add_ip(ip, 'destination')
+        _add_ip(entity_context.get('src_ip'), 'source')
+        _add_ip(entity_context.get('dst_ip'), 'destination')
+
+        # Hostnames
+        for host in entity_context.get('hostnames') or []:
+            _add_host(host)
+        _add_host(entity_context.get('hostname'))
+
+        # Users
+        for user in entity_context.get('usernames') or []:
+            _add_user(user)
+        _add_user(entity_context.get('user'))
+
         # Domain (from query_name or uri)
-        if 'query_name' in entity_context and entity_context['query_name']:
+        if entity_context.get('query_name'):
             entity_id = f"domain-{entity_context['query_name']}"
             entities[entity_id] = {
                 'label': entity_context['query_name'],
                 'type': 'domain'
             }
-        
+
         # Port
-        if 'dst_port' in entity_context and entity_context['dst_port']:
+        if entity_context.get('dst_port'):
             entity_id = f"port-{entity_context['dst_port']}"
             entities[entity_id] = {
                 'label': f"Port {entity_context['dst_port']}",
                 'type': 'port'
             }
-        
+
         return entities
     
     def _extract_techniques(self, finding: Dict[str, Any]) -> List[str]:

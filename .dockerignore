@@ -32,6 +32,12 @@ tests/
 .gitignore
 .gitattributes
 
+# Claude Code local state -- worktrees under here are full parallel copies
+# of the repo (confirmed live 2026-08-09: this was the dominant contributor
+# to a 742MB build context before being excluded) and are never needed at
+# runtime.
+.claude/
+
 # CI/CD
 .github/
 .gitlab-ci.yml

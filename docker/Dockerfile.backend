@@ -28,19 +28,73 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies, plus Node.js (npx), uv (uvx), and git --
+# all required at runtime, not just build time: mcp-config.json spawns
+# several MCP servers via `npx ...` (github, security-detections,
+# attack-layer, ...) and `uvx --from git+... purple-mcp ...` (sentinelone).
+# Confirmed live 2026-08-16, two separate failures in sequence: (1) without
+# node/uv at all, every one of those servers failed with "[Errno 2] No such
+# file or directory"; (2) after adding node/uv but not git, uvx's own
+# `git+https://...` fetch failed with "Git executable not found" -- uv
+# shells out to a real git binary for VCS dependencies, it doesn't vendor
+# one. The app still starts and serves the core API/DB path fine without
+# any of this, but every MCP-backed capability (SentinelOne chat/dashboard
+# grounding included) is unavailable. The uv/uvx binaries are copied
+# straight from Astral's own distribution image -- their documented Docker
+# pattern, and more reliable than piping their install script through curl
+# at build time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     curl \
+    ca-certificates \
+    gnupg \
+    git \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Explicit, shared cache location -- NOT uv's default (~/.cache/uv, which
+# resolves per-user). Confirmed live 2026-08-18: the pre-warm RUN below
+# executes as root (before USER backend further down), so a default-
+# location cache landed in /root/.cache/uv -- the actual app runs as the
+# unprivileged `backend` user with a different HOME, so its own uvx
+# invocation still hit a cold cache and "Failed to connect to MCP server:
+# sentinelone" persisted even after the pre-warm step ran successfully.
+# /app is chown'd to backend:backend below (the existing `chown -R /app`
+# step), so this path ends up correctly owned for the runtime user too --
+# one cache location, populated once, usable by both the build step (as
+# root) and the running app (as `backend`).
+ENV UV_CACHE_DIR=/app/.cache/uv
+
+# Pre-warm uv's cache for purple-mcp (the SentinelOne MCP server) at build
+# time, not first container start. Confirmed live 2026-08-17: even with
+# git present, `uvx --from git+https://github.com/Sentinel-One/purple-mcp.git@v0.7.0`
+# takes 90+ seconds EVERY invocation inside a container -- not just the
+# first one -- resolving the git ref and rebuilding purple-mcp's own heavy
+# dependency chain (numpy, pandas, cryptography, ...) from source each
+# time, seemingly never hitting a warm cache across separate `docker exec`/
+# restart attempts. Whatever app-level timeout governs MCP server startup
+# is shorter than that, so the real app could never connect to it via this
+# path, no matter how many times the container restarts. Running the exact
+# same resolve+build once here, during the image build (unbounded time,
+# real network), bakes the result into this layer's filesystem -- `|| true`
+# because only the cache side-effect matters, not this command's own exit
+# code (e.g. --help may not be a valid purple-mcp flag).
+RUN uvx --from git+https://github.com/Sentinel-One/purple-mcp.git@v0.7.0 purple-mcp --help || true
 
 # Copy requirements + editable-install sources first for better caching.
-# requirements.txt references `-e ./deeptempo-core` and `-e ./mcp-servers`,
-# so those directories must exist at pip-install time.
+# requirements.txt references `-e ./sentry-core`, `-e ./mcp-servers`, and
+# `-e ./mempalace` -- all three directories must exist at pip-install time
+# (confirmed live 2026-08-09: mempalace was missing here entirely and
+# broke the build with "not a valid editable requirement" -- pip only
+# accepts a local editable path if it's actually present in the build
+# context at this point, not just later via the blanket COPY . . below).
 COPY requirements.txt .
-COPY deeptempo-core/ ./deeptempo-core/
+COPY sentry-core/ ./sentry-core/
 COPY mcp-servers/ ./mcp-servers/
+COPY mempalace/ ./mempalace/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt

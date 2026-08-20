@@ -20,8 +20,8 @@ if not frontend_logger.handlers:
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     
-    # Create file handler
-    file_handler = logging.FileHandler(log_dir / "frontend-app.log")
+    # Create file handler with UTF-8 encoding
+    file_handler = logging.FileHandler(log_dir / "frontend-app.log", encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
     
     # Create formatter
@@ -67,6 +67,9 @@ async def log_frontend(entry: FrontendLogEntry):
             # Format extra data nicely
             extra_str = ", ".join([f"{k}={v}" for k, v in entry.extra.items()])
             log_message += f" ({extra_str})"
+        
+        # Sanitize log_message for safe console/file handling
+        log_message = log_message.encode('ascii', 'replace').decode('ascii')
         
         # Log at appropriate level
         level = entry.level.upper()
