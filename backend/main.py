@@ -48,7 +48,10 @@ from api import (
     skills_router,
     llm_providers_router,
     ai_config_router,
+    system_router,
 )
+from api.dashboard import router as dashboard_router
+from api.clients import router as clients_router
 from api.local_services import router as local_services_router
 from api.integrations_compatibility import router as compatibility_router
 from api.ingestion import router as ingestion_router
@@ -56,6 +59,7 @@ from api.timeline import router as timeline_router
 from api.graph import router as graph_router
 from api.vstrike import router as vstrike_router
 from api.custom_agents import router as custom_agents_router
+from api.soc_assistant import router as soc_assistant_router
 
 # Enhanced case management routers
 from api.case_templates import router as case_templates_router
@@ -126,6 +130,9 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset(
         "/api/health",
         # VStrike inbound receiver uses its own bearer API-key dependency.
         "/api/integrations/vstrike/findings",
+        # SOC Assistant (external shift-management dashboard) uses its own
+        # bearer API-key dependency, same pattern as VStrike above.
+        "/api/chat",
     }
 )
 
@@ -174,9 +181,22 @@ except Exception as _inst_err:
 
 # Configure CORS — origins come from VIGIL_CORS_ORIGINS (comma-separated).
 # Default keeps the existing dev hosts; production deployments must override.
+#
+# Bug found live 2026-08-20: this list only had 6988, but
+# frontend/vite.config.ts's dev server actually runs on port 6989
+# (confirmed repeatedly live all session) -- VIGIL_CORS_ORIGINS is never
+# set in docker/docker-compose.yml, so every browser session against the
+# real dev server on 6989 was silently CORS-blocked. The login request
+# never reached the server at all; axios surfaced this as a network
+# failure, which frontend/src/pages/Login.tsx's error handling (before
+# its own fix earlier this session) mislabeled as "Invalid credentials" --
+# so this was very likely the real root cause of that whole report, not
+# rate limiting.
 _DEFAULT_CORS_ORIGINS = [
     "http://localhost:6988",
     "http://127.0.0.1:6988",
+    "http://localhost:6989",
+    "http://127.0.0.1:6989",
     "http://localhost:3000",
     "http://localhost:5173",
 ]
@@ -259,6 +279,8 @@ app.include_router(
 app.include_router(
     mcp_router, prefix="/api/mcp", tags=["mcp"], dependencies=AUTH_DEPENDENCY
 )
+app.include_router(dashboard_router, dependencies=AUTH_DEPENDENCY)
+app.include_router(clients_router, dependencies=AUTH_DEPENDENCY)
 
 # Claude routes expose AI and agent execution capabilities and must require
 # an authenticated user session. Keep rate limiting in addition to auth.
@@ -325,6 +347,10 @@ app.include_router(
 # VStrike /findings is public-but-bearer-authenticated inside the router.
 # All VStrike management/UI/proxy routes require an authenticated user session.
 app.include_router(vstrike_router, prefix="/api/integrations/vstrike", tags=["vstrike"])
+# SOC Assistant /chat is public-but-bearer-authenticated inside the router,
+# same pattern as VStrike above (external shift-management dashboard, no
+# user session -- see backend/api/soc_assistant.py).
+app.include_router(soc_assistant_router, prefix="/api", tags=["soc-assistant"])
 app.include_router(
     storage_status_router,
     prefix="/api/storage",
@@ -335,6 +361,12 @@ app.include_router(
     ai_decisions_router,
     prefix="/api/ai",
     tags=["ai-decisions"],
+    dependencies=AUTH_DEPENDENCY,
+)
+app.include_router(
+    system_router,
+    prefix="/api/system",
+    tags=["system"],
     dependencies=AUTH_DEPENDENCY,
 )
 app.include_router(
@@ -772,6 +804,74 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Error during MCP initialization: {e}")
 
+    # Pre-warm the SentinelOne router's local embedding model (post-Phase-2
+    # latency fix). BAAI/bge-base-en-v1.5 is loaded lazily via lru_cache on
+    # first use (services/sentinelone_embeddings.py) -- measured at ~8s for
+    # that first, one-time ONNX model load. Previously that cost landed on
+    # whichever real user happened to send the first SentinelOne-flavored
+    # chat message after a restart, reading as generic chat slowness. Warm
+    # it here instead, in the background, so it's paid once at boot and no
+    # live request ever waits on it. Router calls after warm-up measured at
+    # ~50-130ms -- not a per-message bottleneck once loaded.
+    try:
+        import asyncio as _asyncio
+
+        async def _warm_sentinelone_router():
+            try:
+                from services.sentinelone_embeddings import embed_texts
+
+                await _asyncio.to_thread(embed_texts, ["warmup"])
+                logger.info("SentinelOne router embedding model pre-warmed")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SentinelOne router pre-warm skipped: %s", exc)
+
+        _asyncio.create_task(_warm_sentinelone_router())
+    except Exception as e:
+        logger.warning(f"Could not schedule SentinelOne router pre-warm: {e}")
+
+    # Dashboard real-time SentinelOne snapshot (dashboard rebuild request,
+    # 2026-08-03: "populated in realtime, sync 24/7"). Background loop
+    # refreshes every 5 minutes regardless of whether anyone is viewing the
+    # dashboard, so a page load reads an already-warm cache
+    # (services/sentinelone_dashboard_service.py) instead of blocking ~6s
+    # on a live multi-call SentinelOne round-trip.
+    try:
+        import asyncio as _asyncio
+
+        async def _start_dashboard_refresh():
+            try:
+                from services.sentinelone_dashboard_service import start_background_refresh
+
+                await start_background_refresh()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Dashboard background refresh loop stopped: %s", exc)
+
+        _asyncio.create_task(_start_dashboard_refresh())
+        logger.info("Dashboard SentinelOne snapshot background refresh scheduled")
+    except Exception as e:
+        logger.warning(f"Could not schedule dashboard background refresh: {e}")
+
+    # Client registry -- EDR (SentinelOne) / SIEM (AlienVault Central) /
+    # Both detection per client (2026-08-12). Reuses the dashboard
+    # snapshot above for SentinelOne site names rather than polling
+    # again; only adds its own AlienVault Central round-trip. Refreshes
+    # every 10 minutes -- see services/client_registry_service.py.
+    try:
+        import asyncio as _asyncio
+
+        async def _start_client_registry_refresh():
+            try:
+                from services.client_registry_service import start_background_refresh
+
+                await start_background_refresh()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Client registry background refresh loop stopped: %s", exc)
+
+        _asyncio.create_task(_start_client_registry_refresh())
+        logger.info("Client registry background refresh scheduled")
+    except Exception as e:
+        logger.warning(f"Could not schedule client registry background refresh: {e}")
+
     # Load custom agents from DB into the AgentManager so built-in + custom
     # agents are visible in one merged list. Lookup misses for "custom-*" IDs
     # also trigger a refresh at request time, so this is a convenience preload.
@@ -858,18 +958,58 @@ async def health_check():
         }
 
 
-# Serve React static files in production
+# Serve React static files in production.
+#
+# Real bug, confirmed live 2026-08-18 (first time this code path was ever
+# actually exercised -- every prior session on this app used the separate
+# Vite dev server on :6989, which serves assets itself and proxies API
+# calls; this static-serving path only runs when the backend itself
+# serves the pre-built SPA, e.g. inside the Docker image, and had never
+# been hit before). `static_dir = frontend_build_dir / "static"` is the
+# Create React App convention -- CLAUDE.md is explicit this app is
+# "React 18 + Vite 5 (not CRA)", and Vite's build puts everything at the
+# build root instead (confirmed: frontend/build/{assets/, favicon.ico,
+# favicon.svg, index.html, logo.svg} -- no static/ subdirectory at all).
+# `static_dir.exists()` was always False, so the /static mount silently
+# never happened, and EVERY request for a real file (the JS bundle,
+# favicons, ...) fell through to the catch-all SPA route below, which
+# unconditionally returned index.html's content with a 200 -- a script
+# tag loading "JavaScript" that was actually the HTML shell, syntax
+# error, blank white page. Not a Docker-specific bug; this is the first
+# time anything actually served the built SPA instead of the dev server.
 frontend_build_dir = Path(__file__).parent.parent / "frontend" / "build"
-static_dir = frontend_build_dir / "static"
+assets_dir = frontend_build_dir / "assets"
 
-# Only mount static files if the build directory exists
-# This prevents errors during development when frontend hasn't been built
-if frontend_build_dir.exists() and static_dir.exists():
+# Real bug, confirmed live 2026-08-20: this route was unconditional, so
+# every `docker compose up --build backend` silently bakes and serves a
+# SECOND frontend on :6987 -- the Docker image runs `npm run build` for
+# the backend build stage, and this catch-all serves that snapshot
+# alongside the real, always-current Vite dev server on :6989 (per
+# CLAUDE.md's documented local-dev workflow, frontend runs separately via
+# `npm run dev`). Both look identical (same login page) but the :6987
+# copy is frozen at whatever commit was checked out at the last image
+# build and silently drifts out of sync with live source -- confusing
+# ("why are there two URLs"), not a deliberate architecture. Gated behind
+# an explicit opt-in so local/dev docker-compose never serves it by
+# default; a genuine standalone single-container deployment (no separate
+# frontend host) can still opt in.
+SERVE_FRONTEND_BUILD = os.getenv("SERVE_FRONTEND_BUILD", "false").strip().lower() in (
+    "true", "1", "yes",
+)
+
+if SERVE_FRONTEND_BUILD and frontend_build_dir.exists() and assets_dir.exists():
     try:
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
-        logger.info(f"Serving static files from: {static_dir}")
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        logger.info(f"Serving static assets from: {assets_dir}")
     except Exception as e:
-        logger.warning(f"Failed to mount static files: {e}")
+        logger.warning(f"Failed to mount static assets: {e}")
+elif not SERVE_FRONTEND_BUILD:
+    logger.info(
+        "SERVE_FRONTEND_BUILD is not set - backend will not serve the frontend "
+        "build (expected in local dev, where the Vite dev server on :6989 "
+        "serves it instead). Set SERVE_FRONTEND_BUILD=true for a standalone "
+        "single-container deployment."
+    )
 else:
     logger.info("Frontend build directory not found - static file serving disabled")
     logger.info(f"  Expected: {frontend_build_dir}")
@@ -877,16 +1017,30 @@ else:
         "  Run 'npm run build' in the frontend directory to enable production mode"
     )
 
-if frontend_build_dir.exists() and (frontend_build_dir / "index.html").exists():
+if SERVE_FRONTEND_BUILD and frontend_build_dir.exists() and (frontend_build_dir / "index.html").exists():
 
     @app.get("/{full_path:path}")
     async def serve_react_app(full_path: str):
-        """Serve React app for all non-API routes."""
+        """Serve the built SPA for real static files at the build root
+        (favicon.ico, favicon.svg, logo.svg, manifest.json, ...) and
+        index.html for every genuine client-side route -- distinguished
+        by whether the requested path resolves to an actual file, not by
+        a hardcoded list of known filenames (robust to the build adding
+        new root-level assets later)."""
         # Don't interfere with API routes
         if full_path.startswith("api/"):
             return {"error": "Not found"}, 404
 
-        # Serve index.html for React routing
+        candidate = (frontend_build_dir / full_path).resolve()
+        try:
+            candidate.relative_to(frontend_build_dir.resolve())
+        except ValueError:
+            candidate = None  # path traversal attempt (e.g. "../../etc/passwd") -- never serve outside the build dir
+        if candidate is not None and candidate.is_file():
+            return FileResponse(candidate)
+
+        # Not a real file -- a client-side route (e.g. /cases, /settings).
+        # Serve index.html so React Router handles it.
         index_file = frontend_build_dir / "index.html"
         if index_file.exists():
             return FileResponse(index_file)
