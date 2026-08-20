@@ -71,6 +71,7 @@ import LLMProvidersTab from '../components/settings/LLMProvidersTab'
 import ModelAssignmentTab from '../components/settings/ModelAssignmentTab'
 import AIOperationsTab from '../components/settings/AIOperationsTab'
 import PlatformDatabaseTab from '../components/settings/PlatformDatabaseTab'
+import RuntimeHealthPanel from '../components/settings/RuntimeHealthPanel'
 import CostAnalytics from './CostAnalytics'
 
 interface TabPanelProps {
@@ -197,11 +198,49 @@ export default function Settings() {
   const [mempalaceTestResult, setMempalaceTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
   const [mempalaceTesting, setMempalaceTesting] = useState(false)
 
+  // Agentic alert emails (2026-08-20): live on/off switch for the SMTP
+  // channel synergy.py's Zeus dispatch chain uses for new-threat and
+  // investigative-report notifications. Telegram is a separate,
+  // unaffected channel.
+  const [emailAlertsEnabled, setEmailAlertsEnabled] = useState(true)
+  const [emailAlertsLoading, setEmailAlertsLoading] = useState(false)
+  const [emailAlertsSaving, setEmailAlertsSaving] = useState(false)
+  const [emailAlertsResult, setEmailAlertsResult] = useState<{ success: boolean; message: string } | null>(null)
+
+  const loadEmailAlertsConfig = async () => {
+    setEmailAlertsLoading(true)
+    try {
+      const response = await configApi.getNotifications()
+      setEmailAlertsEnabled(response.data.email_notifications_enabled)
+    } catch (error) {
+      console.error('Failed to load notifications config:', error)
+    } finally {
+      setEmailAlertsLoading(false)
+    }
+  }
+
+  const handleToggleEmailAlerts = async (checked: boolean) => {
+    const previous = emailAlertsEnabled
+    setEmailAlertsEnabled(checked)
+    setEmailAlertsSaving(true)
+    setEmailAlertsResult(null)
+    try {
+      await configApi.setNotifications({ email_notifications_enabled: checked })
+      setEmailAlertsResult({ success: true, message: checked ? 'Agentic alert emails enabled' : 'Agentic alert emails disabled' })
+    } catch (error) {
+      setEmailAlertsEnabled(previous)
+      setEmailAlertsResult({ success: false, message: 'Failed to update notification settings' })
+      console.error('Failed to update notifications config:', error)
+    } finally {
+      setEmailAlertsSaving(false)
+    }
+  }
+
   useEffect(() => { loadConfigs() }, [])
   useEffect(() => { setGeneralConfig(prev => ({ ...prev, show_notifications: notificationsEnabled })) }, [notificationsEnabled])
   useEffect(() => {
     if (currentTab === tabIndex['integrations']) { loadMcpServers() }
-    else if (currentTab === tabIndex['general']) { loadMempalaceHealth() }
+    else if (currentTab === tabIndex['general']) { loadMempalaceHealth(); loadEmailAlertsConfig() }
     else if (IS_DEV_MODE && currentTab === tabIndex['dev']) { loadSplunkStatus(); loadStorageStatus() }
   }, [currentTab, tabIndex])
 
@@ -1850,6 +1889,8 @@ export default function Settings() {
         return (
           <TabPanel value={currentTab} index={idx} key={tabKey}>
             <PlatformDatabaseTab setMessage={setMessage} />
+            <Divider sx={{ my: 4 }} />
+            <RuntimeHealthPanel />
           </TabPanel>
         )
 
@@ -1865,6 +1906,32 @@ export default function Settings() {
               </FormGroup>
               <Divider sx={{ my: 2 }} />
               <Button variant="contained" startIcon={<SaveIcon />} onClick={handleSaveGeneral}>Save</Button>
+            </Box>
+
+            <Box sx={{ mt: 4, maxWidth: 900 }}>
+              <Divider sx={{ mb: 3 }} />
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>Agentic Alert Emails</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Turn the SMTP channel for new-threat and investigative-report notifications off or on live,
+                without touching credentials or restarting the backend/daemon. Telegram is a separate channel and is not affected.
+              </Typography>
+              <FormGroup>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={emailAlertsEnabled}
+                      disabled={emailAlertsLoading || emailAlertsSaving}
+                      onChange={(e) => handleToggleEmailAlerts(e.target.checked)}
+                    />
+                  }
+                  label={emailAlertsSaving ? 'Saving...' : (emailAlertsEnabled ? 'Enabled' : 'Disabled')}
+                />
+              </FormGroup>
+              {emailAlertsResult && (
+                <Alert severity={emailAlertsResult.success ? 'success' : 'error'} sx={{ mt: 1, maxWidth: 400, '& .MuiAlert-message': { fontSize: '0.85rem' } }}>
+                  {emailAlertsResult.message}
+                </Alert>
+              )}
             </Box>
 
             <Box sx={{ mt: 4, maxWidth: 900 }}>

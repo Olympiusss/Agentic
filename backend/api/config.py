@@ -1193,6 +1193,70 @@ async def set_ai_operations_config(config: AIOperationsSettingsConfig):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class NotificationsSettingsConfig(BaseModel):
+    """Runtime notification-channel toggles (unified-schema foundation,
+    Phase 2 follow-on, 2026-08-20).
+
+    Persisted in ``system_config`` at key ``notifications.settings``.
+    Consumed via ``services.runtime_config.get_notification_setting``
+    which layers DB -> env var (``DAEMON_EMAIL_NOTIFICATIONS_ENABLED``) ->
+    default. Exposed in the Settings UI (General) so operators can turn
+    agentic-alert emails off/on live without restarting the backend or
+    daemon. Deliberately scoped to email -- Telegram is a separate,
+    unaffected channel.
+    """
+
+    email_notifications_enabled: bool = True
+
+
+NOTIFICATIONS_DEFAULTS = NotificationsSettingsConfig().model_dump()
+
+
+@router.get("/notifications")
+async def get_notifications_config():
+    """Return the current notification toggles (defaults merged with DB overrides)."""
+    try:
+        config_service = get_config_service()
+        value = config_service.get_system_config("notifications.settings")
+        if value:
+            return {**NOTIFICATIONS_DEFAULTS, **value}
+        return NOTIFICATIONS_DEFAULTS
+    except Exception as e:
+        logger.error(f"Error getting notifications config: {e}")
+        return NOTIFICATIONS_DEFAULTS
+
+
+@router.post("/notifications")
+async def set_notifications_config(config: NotificationsSettingsConfig):
+    """Persist the notification toggles and invalidate the in-process cache."""
+    try:
+        config_data = config.model_dump()
+        config_service = get_config_service(user_id="web_ui")
+        success = config_service.set_system_config(
+            key="notifications.settings",
+            value=config_data,
+            description="Runtime notification-channel toggles",
+            config_type="notifications",
+            change_reason="Updated via Settings UI",
+        )
+        if not success:
+            raise HTTPException(
+                status_code=500, detail="Failed to save notifications config"
+            )
+        try:
+            from services.runtime_config import clear_notifications_cache
+
+            clear_notifications_cache()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"runtime_config notifications cache clear skipped: {exc}")
+        return {"success": True, "message": "Notifications config updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting notifications config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class OrchestratorSettingsConfig(BaseModel):
     """Orchestrator configuration for autonomous investigations."""
 

@@ -59,8 +59,8 @@ def clear_cache() -> None:
         _cache_expires_at = 0.0
 
 
-def _fetch_db_config() -> Optional[Dict[str, Any]]:
-    """Return the DB-backed config dict, or None if DB unavailable."""
+def _fetch_db_config(config_key: str) -> Optional[Dict[str, Any]]:
+    """Return the DB-backed config dict for ``config_key``, or None if DB unavailable."""
     try:
         from database.config_service import get_config_service
     except Exception as exc:  # noqa: BLE001
@@ -68,7 +68,7 @@ def _fetch_db_config() -> Optional[Dict[str, Any]]:
         return None
     try:
         svc = get_config_service()
-        return svc.get_system_config(_CONFIG_KEY) or {}
+        return svc.get_system_config(config_key) or {}
     except Exception as exc:  # noqa: BLE001
         logger.debug("runtime_config: DB fetch failed: %s", exc)
         return None
@@ -80,7 +80,7 @@ def _load_cache() -> Dict[str, Any]:
     with _cache_lock:
         if time.monotonic() < _cache_expires_at and _cache:
             return _cache
-        fresh = _fetch_db_config() or {}
+        fresh = _fetch_db_config(_CONFIG_KEY) or {}
         _cache = fresh
         _cache_expires_at = time.monotonic() + _CACHE_TTL_SECONDS
         return _cache
@@ -124,6 +124,61 @@ def get_ai_operations_setting(key: str, default: Any) -> Any:
     if key in cache:
         return _coerce(cache[key], default)
     env_name = ENV_FALLBACKS.get(key)
+    if env_name:
+        raw = os.getenv(env_name)
+        if raw is not None and raw != "":
+            return _coerce(raw, default)
+    return default
+
+
+# --- Notification toggles (unified-schema foundation, Phase 2 follow-on,
+# 2026-08-20) --------------------------------------------------------------
+# Same DB > env > default resolution as above, kept as a separate
+# system_config key/cache so flipping AI-ops settings and flipping the
+# email-notifications switch don't invalidate each other's cache.
+
+_NOTIFICATIONS_CONFIG_KEY = "notifications.settings"
+
+NOTIFICATIONS_ENV_FALLBACKS = {
+    "email_notifications_enabled": "DAEMON_EMAIL_NOTIFICATIONS_ENABLED",
+}
+
+_notifications_cache_lock = threading.Lock()
+_notifications_cache: Dict[str, Any] = {}
+_notifications_cache_expires_at: float = 0.0
+
+
+def clear_notifications_cache() -> None:
+    """Drop the in-process notifications cache. Called after
+    POST /config/notifications and from tests that mutate env vars."""
+    global _notifications_cache, _notifications_cache_expires_at
+    with _notifications_cache_lock:
+        _notifications_cache = {}
+        _notifications_cache_expires_at = 0.0
+
+
+def _load_notifications_cache() -> Dict[str, Any]:
+    global _notifications_cache, _notifications_cache_expires_at
+    with _notifications_cache_lock:
+        if time.monotonic() < _notifications_cache_expires_at and _notifications_cache:
+            return _notifications_cache
+        fresh = _fetch_db_config(_NOTIFICATIONS_CONFIG_KEY) or {}
+        _notifications_cache = fresh
+        _notifications_cache_expires_at = time.monotonic() + _CACHE_TTL_SECONDS
+        return _notifications_cache
+
+
+def get_notification_setting(key: str, default: Any) -> Any:
+    """Resolve one notification setting (DB > env > default).
+
+    Prefer this over direct ``os.getenv(...)`` in synergy.py's notifier so
+    the Settings-UI switch takes effect without restarting the backend /
+    daemon.
+    """
+    cache = _load_notifications_cache()
+    if key in cache:
+        return _coerce(cache[key], default)
+    env_name = NOTIFICATIONS_ENV_FALLBACKS.get(key)
     if env_name:
         raw = os.getenv(env_name)
         if raw is not None and raw != "":
