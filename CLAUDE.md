@@ -4,6 +4,33 @@ This file provides guidance for AI assistants (Claude Code and similar tools) wo
 
 ---
 
+## Working Principles
+
+**Be cautious while being thorough.** Added 2026-08-20 after a live
+incident: a fix for a connection-pool-exhaustion outage converted
+`database/connection.py::get_db_session()` into a generator (correct
+for its `Depends()` callers) but was verified only against the ~7
+FastAPI files using `Depends(get_db_session)` — not the ~80+ other
+call sites across `services/`, `backend/api/`, `mcp-servers/`,
+`scripts/`, and `tools/` that call `get_db_session()` directly and
+expect a plain `Session` back. The regression broke `GET /api/auth/me`
+(`'generator' object has no attribute 'query'`), which in turn made
+the *login page* show "Invalid credentials" for correct credentials —
+a confusing, hard-to-trace symptom several steps removed from the
+actual bug, that took multiple rounds of debugging to trace back to
+its root cause. Before changing a shared low-level function (a DB
+session getter, an auth helper, a widely-imported utility), grep for
+every call site and reason about each one's calling convention, not
+just the ones the immediate bug touches — the fix should look like a
+scalpel, not a global reinterpretation of the function's contract that
+just happens to fix the file in front of you. When a call site's own
+expectations don't match what's needed for the fix, use exactly the
+approach that all of them can share safely, otherwise split the
+callers into two clearly-named functions rather than repurposing an
+existing one out from under half its callers.
+
+---
+
 ## Project Overview
 
 **Sentry Agentic** is an open-source, AI-native Security Operations Center (SOC) platform. It orchestrates 13 specialized AI agents via Claude to perform triage, investigation, threat hunting, forensics, and automated response across 30+ security integrations.
