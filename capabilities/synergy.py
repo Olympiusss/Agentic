@@ -722,45 +722,41 @@ async def _get_siem_cross_check(client_name: str) -> Optional[str]:
         return None
 
 
-async def _notify_investigative_report(finding_id: str, highest_verdict: str, detected_at: Optional[str]) -> None:
-    """Phase 2: the full SOC-analyst-style investigative report, rewritten
-    2026-08-18 to reproduce the user's exact template verbatim (explicit
-    user request: "This is the exact template, tone, and style of our
-    analysis report" -- see _SAMPLE_REPORT above). Deterministic fields
-    (hostname, process, hashes, signing, timestamp, client name) come
-    straight from already-retrieved data; the three prose sections
-    (verification finding, Note, Recommendations) come from one
-    synthesize() call in _synthesize_report_narrative. Fires as soon as
-    Venus and Athena (the two agents that actually produce this content)
-    are done, not after the rest of the pipeline -- see
-    run_synergy_pipeline's docstring. Degrades field-by-field to "not
-    available" rather than skipping the notification when a field
-    genuinely isn't there (no storyline, no artifacts found, reputation
-    providers unconfigured, event URL not yet available -- omitted per
-    the template's own Field Notes: "never fabricate; omit the line if
-    unavailable")."""
+async def build_investigative_report_content(
+    finding_id: str,
+    highest_verdict: Optional[str] = None,
+    detected_at: Optional[str] = None,
+) -> Optional[dict]:
+    """Render half of _notify_investigative_report, split out 2026-08-20
+    (Analyst Workbench v1) so a read-only preview endpoint
+    (backend/api/findings.py's GET /{finding_id}/notification-preview)
+    can call it without going through the dedup-guarded send path below.
+    When highest_verdict is not supplied (the preview caller doesn't
+    have a live pipeline run to hand one in), it's read from whatever
+    Athena already persisted at
+    finding.ai_enrichment.athena_threat_intel.highest_verdict (written
+    by _run_athena_step during the live pipeline, before this is ever
+    called there either). Returns None if the finding row doesn't
+    exist. Never raises -- callers get None on any failure, same
+    fail-soft posture as the rest of this module.
+    """
     try:
-        from capabilities.notifier import notify_new_threat
         from services.database_data_service import DatabaseDataService
         from services.sentinelone_dashboard_service import get_site_for_endpoint
-
-        dedup = _get_notification_dedup()
-        dedup_key = f"{finding_id}:phase2"
-        if await dedup.is_processed(dedup_key):
-            logger.info(f"Investigative report for {finding_id} already sent -- skipping duplicate dispatch")
-            return
 
         svc = DatabaseDataService()
         finding = svc.get_finding(finding_id)
         if not finding:
-            logger.warning(f"Investigative report notification skipped for {finding_id}: finding row not found")
-            return
+            return None
 
         entity_context = finding.get("entity_context") or {}
         enrichment = finding.get("ai_enrichment") or {}
         athena = enrichment.get("athena_threat_intel") or {}
         processes = athena.get("processes") or []
         network = athena.get("network_connections") or []
+
+        if highest_verdict is None:
+            highest_verdict = athena.get("highest_verdict") or "unknown"
 
         # Prefer the artifact with the worst reputation verdict (the one
         # an analyst would actually want to see first), fall back to the
@@ -853,11 +849,6 @@ async def _notify_investigative_report(finding_id: str, highest_verdict: str, de
                 elapsed_s = (datetime.now(timezone.utc) - det_dt).total_seconds()
             except ValueError:
                 pass
-        if elapsed_s is not None:
-            if elapsed_s > 180:
-                logger.warning(f"Investigative report for {finding_id} took {elapsed_s:.0f}s -- exceeded the 3-minute SLA")
-            else:
-                logger.info(f"Investigative report for {finding_id} sent {elapsed_s:.0f}s after detection (within 3-minute SLA)")
 
         user_clause = f", associated with the user {process_user}" if process_user else ""
         event_details = [
@@ -900,10 +891,69 @@ async def _notify_investigative_report(finding_id: str, highest_verdict: str, de
             "a fresh investigation, CVE lookups), I'll point you to the right agent by name."
         )
 
+        return {
+            "finding_id": finding_id,
+            "subject": subject,
+            "summary": summary,
+            "client_name": client_name,
+            "elapsed_s": elapsed_s,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Failed to build investigative report content for {finding_id}: {e}")
+        return None
+
+
+async def _notify_investigative_report(finding_id: str, highest_verdict: str, detected_at: Optional[str]) -> None:
+    """Phase 2: the full SOC-analyst-style investigative report, rewritten
+    2026-08-18 to reproduce the user's exact template verbatim (explicit
+    user request: "This is the exact template, tone, and style of our
+    analysis report" -- see _SAMPLE_REPORT above). Deterministic fields
+    (hostname, process, hashes, signing, timestamp, client name) come
+    straight from already-retrieved data; the three prose sections
+    (verification finding, Note, Recommendations) come from one
+    synthesize() call in _synthesize_report_narrative. Fires as soon as
+    Venus and Athena (the two agents that actually produce this content)
+    are done, not after the rest of the pipeline -- see
+    run_synergy_pipeline's docstring. Degrades field-by-field to "not
+    available" rather than skipping the notification when a field
+    genuinely isn't there (no storyline, no artifacts found, reputation
+    providers unconfigured, event URL not yet available -- omitted per
+    the template's own Field Notes: "never fabricate; omit the line if
+    unavailable").
+
+    Content-rendering split out 2026-08-20 into
+    build_investigative_report_content() (Analyst Workbench v1) so a
+    read-only preview endpoint can reuse it -- this function now only
+    handles send-path concerns: the dedup check (a preview isn't a
+    dispatch attempt, so it must not be gated by "already sent"), the
+    3-minute-SLA logging (spurious for a preview call, which typically
+    omits detected_at), the actual send, and the blackboard write.
+    """
+    try:
+        from capabilities.notifier import notify_new_threat
+
+        dedup = _get_notification_dedup()
+        dedup_key = f"{finding_id}:phase2"
+        if await dedup.is_processed(dedup_key):
+            logger.info(f"Investigative report for {finding_id} already sent -- skipping duplicate dispatch")
+            return
+
+        content = await build_investigative_report_content(finding_id, highest_verdict, detected_at)
+        if not content:
+            logger.warning(f"Investigative report notification skipped for {finding_id}: finding row not found")
+            return
+
+        elapsed_s = content["elapsed_s"]
+        if elapsed_s is not None:
+            if elapsed_s > 180:
+                logger.warning(f"Investigative report for {finding_id} took {elapsed_s:.0f}s -- exceeded the 3-minute SLA")
+            else:
+                logger.info(f"Investigative report for {finding_id} sent {elapsed_s:.0f}s after detection (within 3-minute SLA)")
+
         results = await notify_new_threat(
-            summary,
+            content["summary"],
             to_email_addresses=_notification_emails(),
-            subject=subject,
+            subject=content["subject"],
             telegram_lead="Hermes <Reporter> -- investigative report ready:",
         )
         sent_channels = [r.channel for r in results if r.kind == "sent"]
@@ -925,8 +975,8 @@ async def _notify_investigative_report(finding_id: str, highest_verdict: str, de
         _write_blackboard(finding_id, "notification", {
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "channels": sent_channels,
-            "content": summary,
-            "client_name": client_name,
+            "content": content["summary"],
+            "client_name": content["client_name"],
             "seconds_after_detection": round(elapsed_s) if elapsed_s is not None else None,
         })
     except Exception as e:  # noqa: BLE001

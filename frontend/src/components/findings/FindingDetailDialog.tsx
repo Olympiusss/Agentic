@@ -93,12 +93,34 @@ export default function FindingDetailDialog({
   const [escalateTo, setEscalateTo] = useState('')
   const [submittingAction, setSubmittingAction] = useState(false)
 
+  // Client Notification Preview (Analyst Workbench v1, 2026-08-20):
+  // 'error' is a sentinel distinct from null (not-yet-loaded) so the
+  // accordion can distinguish "hasn't been asked for yet" from "asked
+  // for and failed" without a third boolean.
+  const [notificationPreview, setNotificationPreview] = useState<{ subject: string; summary: string } | 'error' | null>(null)
+  const [notificationPreviewLoading, setNotificationPreviewLoading] = useState(false)
+
+  const loadNotificationPreview = async () => {
+    if (!findingId) return
+    setNotificationPreviewLoading(true)
+    try {
+      const response = await findingsApi.getNotificationPreview(findingId)
+      setNotificationPreview({ subject: response.data.subject, summary: response.data.summary })
+    } catch (error) {
+      console.error('Failed to load notification preview:', error)
+      setNotificationPreview('error')
+    } finally {
+      setNotificationPreviewLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (open && findingId) {
       loadFinding()
       loadEnrichment()
       loadTimeline()
       loadDecisions()
+      setNotificationPreview(null)
     }
   }, [open, findingId])
 
@@ -914,6 +936,39 @@ export default function FindingDetailDialog({
                   )}
                 </Box>
               )}
+            </Grid>
+
+            {/* Client Notification Preview (Analyst Workbench v1,
+                2026-08-20): read-only render of what
+                capabilities/synergy.py's pipeline would send (or
+                already sent) -- no send-from-UI wiring yet. Lazy-loads
+                on expand, not in the main useEffect, since it's an
+                optional secondary section with its own finding +
+                enrichment read on the backend. */}
+            <Grid item xs={12}>
+              <Accordion onChange={(_, isExpanded) => { if (isExpanded && !notificationPreview) loadNotificationPreview() }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography variant="subtitle1">Client Notification Preview</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  {notificationPreviewLoading ? (
+                    <CircularProgress size={20} />
+                  ) : notificationPreview === 'error' ? (
+                    <Alert severity="warning">Could not generate a notification preview for this finding.</Alert>
+                  ) : notificationPreview === null ? (
+                    <Typography variant="body2" color="textSecondary">Expand to generate a preview.</Typography>
+                  ) : (
+                    <Box>
+                      <Typography variant="caption" color="textSecondary">Subject</Typography>
+                      <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }}>{notificationPreview.subject}</Typography>
+                      <Typography variant="caption" color="textSecondary">Body</Typography>
+                      <Paper variant="outlined" sx={{ p: 1.5, whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>
+                        {notificationPreview.summary}
+                      </Paper>
+                    </Box>
+                  )}
+                </AccordionDetails>
+              </Accordion>
             </Grid>
           </Grid>
         ) : null}

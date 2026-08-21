@@ -99,6 +99,126 @@ async def get_findings(
     }
 
 
+_SEVERITY_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+
+def _compute_priority_and_segment(finding: dict, pattern_classifications: set) -> tuple:
+    """Unified Priority Queue v1 scoring (Analyst Workbench, 2026-08-20).
+    score = severity_weight (0-4) x confidence (0-1) x 25 => 0-100, +20
+    (capped 100) if the linked case's SLA is breached or its
+    resolution_due is within 2 hours. No asset-criticality input exists
+    anywhere in the schema (no Asset model) so none is used -- explicit
+    v1 scope boundary, not an oversight.
+
+    Segment precedence (first match wins): multi_tenant_pattern (this
+    finding's classification/alert_name is also seen at other clients
+    recently -- checked first since cross-tenant correlation is the most
+    novel/valuable signal regardless of this finding's own decision
+    state) -> in_progress (an open case already exists -- active work) ->
+    needs_decision (decision_action IS NULL -- the agent drafted, no
+    analyst action yet) -> spot_check (decision already actioned,
+    typically 'approve', nothing further expected).
+    """
+    from datetime import datetime, timedelta
+
+    severity_weight = _SEVERITY_WEIGHT.get((finding.get("severity") or "").lower(), 0)
+    confidence = finding.get("confidence_score") or 0.0
+    score = severity_weight * confidence * 25
+
+    now = datetime.utcnow()
+    resolution_due = finding.get("sla_resolution_due")
+    resolution_due_dt = datetime.fromisoformat(resolution_due) if resolution_due else None
+    sla_near_or_breached = bool(finding.get("sla_breached")) or (
+        resolution_due_dt is not None
+        and not finding.get("sla_resolution_completed_at")
+        and resolution_due_dt <= now + timedelta(hours=2)
+    )
+    if sla_near_or_breached:
+        score = min(100.0, score + 20)
+
+    entity_context = finding.get("entity_context") or {}
+    classification = entity_context.get("classification") or entity_context.get("alert_name")
+    is_pattern = classification is not None and classification in pattern_classifications
+    case_open = finding.get("linked_case_id") and finding.get("linked_case_status") not in ("closed", "resolved")
+
+    if is_pattern:
+        segment = "multi_tenant_pattern"
+    elif case_open:
+        segment = "in_progress"
+    elif finding.get("decision_action") is None:
+        segment = "needs_decision"
+    else:
+        segment = "spot_check"
+
+    return round(score, 1), segment
+
+
+@router.get("/queue")
+async def get_priority_queue(
+    segment: Optional[str] = Query(
+        None, description="Filter to one tab: needs_decision|spot_check|in_progress|multi_tenant_pattern"
+    ),
+    client_id: Optional[str] = Query(None, description="Filter by client (ignored/overridden for role-client users)"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    lookback_hours: int = Query(72, ge=1, le=168, description="Cross-tenant pattern lookback window"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Unified Priority Queue (Analyst Workbench v1, 2026-08-20). Reuses the
+    exact same role-client scoping as GET /. Only surfaces findings the
+    agent has already drafted a decision for (see
+    DatabaseService.get_priority_queue_candidates) -- a queue of
+    AI-drafted work, not the raw findings feed.
+
+    NOTE: declared before GET /{finding_id} so this one-segment path
+    isn't swallowed as finding_id="queue".
+    """
+    from database.service import DatabaseService
+
+    effective_client_id = client_id
+    if current_user.role_id == "role-client":
+        effective_client_id = current_user.client_id
+        if not effective_client_id:
+            return {"findings": [], "total": 0, "offset": offset, "limit": limit,
+                     "has_more": False, "segment_counts": {}}
+
+    db_service = DatabaseService()
+    pattern_classifications = db_service.get_cross_tenant_pattern_classifications(
+        lookback_hours=lookback_hours
+    )
+    candidates = db_service.get_priority_queue_candidates(
+        client_id=effective_client_id,
+        exclude_statuses=["closed", "resolved"],
+    )
+
+    scored = []
+    segment_counts = {"needs_decision": 0, "spot_check": 0, "in_progress": 0, "multi_tenant_pattern": 0}
+    for f in candidates:
+        score, seg = _compute_priority_and_segment(f, pattern_classifications)
+        f["priority_score"] = score
+        f["segment"] = seg
+        segment_counts[seg] = segment_counts.get(seg, 0) + 1
+        scored.append(f)
+
+    if segment:
+        scored = [f for f in scored if f["segment"] == segment]
+
+    scored.sort(key=lambda f: f["priority_score"], reverse=True)
+
+    total = len(scored)
+    page = scored[offset: offset + limit]
+
+    return {
+        "findings": page,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": (offset + limit) < total,
+        "segment_counts": segment_counts,
+    }
+
+
 @router.get("/{finding_id}")
 async def get_finding(finding_id: str):
     """
@@ -573,6 +693,43 @@ Respond ONLY with valid JSON. Be specific and actionable. Focus on helping a SOC
             status_code=500, 
             detail=f"Failed to generate enrichment: {str(e)}"
         )
+
+
+@router.get("/{finding_id}/notification-preview")
+async def get_notification_preview(
+    finding_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Read-only preview of the client-facing investigative-report
+    notification (Analyst Workbench v1, view-only -- no send-from-UI).
+    Renders what capabilities/synergy.py's real pipeline would send (or
+    already sent) via the shared build_investigative_report_content().
+    """
+    finding = data_service.get_finding(finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    # Stricter than the plain GET /{finding_id} above (which has no
+    # client scoping check today) -- notification content is more
+    # sensitive/client-identifying, so a role-client analyst must not be
+    # able to preview another client's notification by guessing an ID.
+    if current_user.role_id == "role-client":
+        if not current_user.client_id or finding.get("client_id") != current_user.client_id:
+            raise HTTPException(status_code=404, detail="Finding not found")
+
+    from capabilities.synergy import build_investigative_report_content
+
+    content = await build_investigative_report_content(finding_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Finding not found")
+
+    return {
+        "finding_id": finding_id,
+        "subject": content["subject"],
+        "summary": content["summary"],
+        "client_name": content["client_name"],
+    }
 
 
 @router.delete("/all")

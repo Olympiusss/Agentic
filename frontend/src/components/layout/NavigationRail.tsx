@@ -26,6 +26,7 @@ import {
   HistoryOutlined as HistoryIcon,
   AutoAwesomeOutlined as PromptsIcon,
   BusinessOutlined as ClientsIcon,
+  FactCheckOutlined as WorkbenchIcon,
   ChevronLeft,
   ChevronRight,
   LightModeOutlined as LightModeIcon,
@@ -93,11 +94,12 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard',     icon: <DashboardIcon sx={{ fontSize: 20 }} />, path: '/' },
-  { id: 'clients',   label: 'Clients',       icon: <ClientsIcon   sx={{ fontSize: 20 }} />, path: '/clients' },
-  { id: 'chats',     label: 'Chats History', icon: <HistoryIcon   sx={{ fontSize: 20 }} />, path: '/chats' },
-  { id: 'prompts',   label: 'Prompts Repo',  icon: <PromptsIcon   sx={{ fontSize: 20 }} />, path: '/prompts' },
-  { id: 'settings',  label: 'Settings',      icon: <SettingsIcon  sx={{ fontSize: 20 }} />, path: '/settings' },
+  { id: 'dashboard',  label: 'Dashboard',     icon: <DashboardIcon  sx={{ fontSize: 20 }} />, path: '/' },
+  { id: 'clients',    label: 'Clients',       icon: <ClientsIcon    sx={{ fontSize: 20 }} />, path: '/clients' },
+  { id: 'workbench',  label: 'Workbench',     icon: <WorkbenchIcon  sx={{ fontSize: 20 }} />, path: '/workbench' },
+  { id: 'chats',      label: 'Chats History', icon: <HistoryIcon    sx={{ fontSize: 20 }} />, path: '/chats' },
+  { id: 'prompts',    label: 'Prompts Repo',  icon: <PromptsIcon    sx={{ fontSize: 20 }} />, path: '/prompts' },
+  { id: 'settings',   label: 'Settings',      icon: <SettingsIcon   sx={{ fontSize: 20 }} />, path: '/settings' },
 ]
 
 interface ThemeOption {
