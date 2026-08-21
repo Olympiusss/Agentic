@@ -196,6 +196,29 @@ def add_ai_decision_action_columns(conn):
 
 
 # ---------------------------------------------------------------------------
+# Client portal (Security Insights Platform, 2026-08-21)
+#
+# client_api_credentials is a brand-new table registered in
+# database/models.py's Base.metadata, so "Create any missing tables from
+# models" above already creates it on an already-provisioned database.
+# approval_actions already exists (13_approval_actions.sql, no FK there --
+# see that file's header comment on init-order); this just adds the
+# column + real FK for already-provisioned databases, same pattern as
+# findings/users.client_id above.
+# ---------------------------------------------------------------------------
+
+@migration("Add client_id column to approval_actions")
+def add_approval_actions_client_id(conn):
+    conn.execute(text("""
+        ALTER TABLE approval_actions ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)
+        REFERENCES clients(client_id);
+    """))
+    conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS idx_approval_actions_client_id ON approval_actions(client_id);
+    """))
+
+
+# ---------------------------------------------------------------------------
 # Seed data
 # ---------------------------------------------------------------------------
 

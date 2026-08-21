@@ -312,6 +312,7 @@ dbInit:
     - 17_llm_job_dead_letters.sql
     - 18_agent_task_state.sql
     - 19_clients.sql
+    - 20_client_api_credentials.sql
   resources:
     requests:
       cpu: 50m

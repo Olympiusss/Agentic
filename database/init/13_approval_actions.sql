@@ -38,7 +38,15 @@ CREATE TABLE IF NOT EXISTS approval_actions (
     -- Workflow linkage (#128): null for non-workflow approvals (e.g.
     -- daemon-triggered containment actions).
     workflow_run_id     VARCHAR(80)  REFERENCES workflow_runs(run_id) ON DELETE SET NULL,
-    workflow_phase_id   TEXT
+    workflow_phase_id   TEXT,
+    -- Client-portal scoping (2026-08-21). No FK here on purpose: this
+    -- file (13_) runs before 19_clients.sql in docker-compose's
+    -- lexicographic init order, so a FK to clients(client_id) would
+    -- fail on a fresh stack -- same reasoning 19_clients.sql already
+    -- documents for users.client_id. scripts/migrate_schema.py adds
+    -- the real FK for already-provisioned databases, where ordering
+    -- isn't a concern.
+    client_id           VARCHAR(64)
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_actions_status_created
@@ -49,6 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_approval_actions_workflow_run
 CREATE INDEX IF NOT EXISTS idx_approval_actions_pending
     ON approval_actions(created_at DESC)
     WHERE status = 'pending' AND requires_approval = TRUE;
+CREATE INDEX IF NOT EXISTS idx_approval_actions_client_id
+    ON approval_actions(client_id);
 
 
 -- Extend workflow_runs.status to include 'paused'. A workflow run

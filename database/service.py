@@ -6,11 +6,11 @@ Provides high-level database operations for cases, findings, and related entitie
 
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 
-from database.models import Case, Finding, SketchMapping, AttackLayer, AIDecisionLog, LLMJobDeadLetter, AgentTaskState, case_findings
+from database.models import Case, Finding, SketchMapping, AttackLayer, AIDecisionLog, LLMJobDeadLetter, AgentTaskState, case_findings, Client, CaseSLA, ClientApiCredential, User
 from database.connection import get_db_manager
 
 logger = logging.getLogger(__name__)
@@ -236,6 +236,366 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error counting findings: {e}")
             return 0
+
+    def get_cross_tenant_pattern_classifications(
+        self, lookback_hours: int = 72, min_distinct_clients: int = 2
+    ) -> set:
+        """Coarse v1 approximation of cross-tenant pattern detection for
+        the Unified Priority Queue (Analyst Workbench, 2026-08-20) --
+        NOT real hash/IP/TTP correlation. capabilities/correlator.py's
+        Ariadne only clusters SAME-tenant SentinelOne alerts by
+        storylineId/host/classification into unstructured prose inside
+        one finding's ai_enrichment blob; it isn't a queryable
+        cross-finding structure, and raw Finding.cluster_id values are
+        SentinelOne per-tenant GUIDs that will essentially never collide
+        across clients. This instead groups on
+        entity_context->>'classification' (falling back to
+        entity_context->>'alert_name') within a lookback window and
+        flags values seen across >= min_distinct_clients distinct
+        client_ids.
+
+        Returns:
+            Set of classification/alert_name strings seen across
+            multiple clients recently.
+        """
+        try:
+            with self.db_manager.session_scope() as session:
+                classification_expr = func.coalesce(
+                    Finding.entity_context["classification"].astext,
+                    Finding.entity_context["alert_name"].astext,
+                )
+                cutoff = datetime.utcnow() - timedelta(hours=lookback_hours)
+                query = (
+                    select(classification_expr)
+                    .where(
+                        classification_expr.isnot(None),
+                        Finding.client_id.isnot(None),
+                        Finding.timestamp >= cutoff,
+                    )
+                    .group_by(classification_expr)
+                    .having(func.count(func.distinct(Finding.client_id)) >= min_distinct_clients)
+                )
+                return {row[0] for row in session.execute(query).all()}
+        except Exception as e:
+            logger.error(f"Error computing cross-tenant pattern classifications: {e}")
+            return set()
+
+    def get_priority_queue_candidates(
+        self,
+        client_id: Optional[str] = None,
+        exclude_statuses: Optional[List[str]] = None,
+        candidate_limit: int = 2000,
+    ) -> List[dict]:
+        """Findings the agent has already processed (i.e. have >=1
+        AIDecisionLog row) for the Unified Priority Queue (Analyst
+        Workbench, 2026-08-20), joined 1:1 to their MOST RECENT decision
+        by timestamp (mirrors FindingDetailDialog.tsx's client-side
+        `latestDecision` selection), their Client.display_name, and --
+        when the decision escalated into a case -- that case's status
+        and CaseSLA fields. Findings the agent hasn't touched at all are
+        deliberately excluded (v1 scope: this is a queue of AI-drafted
+        work, not the raw findings feed -- see get_findings above for
+        that). Bounded by candidate_limit (ordered by Finding.timestamp
+        desc) rather than true DB-side pagination, because
+        priority_score/segment are computed in Python per-row after this
+        fetch -- see backend/api/findings.py's get_priority_queue.
+        """
+        try:
+            with self.db_manager.session_scope() as session:
+                latest_decision_sq = (
+                    select(
+                        AIDecisionLog.finding_id.label("finding_id"),
+                        AIDecisionLog.decision_id.label("decision_id"),
+                        AIDecisionLog.agent_id.label("agent_id"),
+                        AIDecisionLog.confidence_score.label("confidence_score"),
+                        AIDecisionLog.reasoning.label("reasoning"),
+                        AIDecisionLog.decision_action.label("decision_action"),
+                        AIDecisionLog.linked_case_id.label("linked_case_id"),
+                        AIDecisionLog.timestamp.label("decision_timestamp"),
+                        func.row_number().over(
+                            partition_by=AIDecisionLog.finding_id,
+                            order_by=AIDecisionLog.timestamp.desc(),
+                        ).label("rn"),
+                    )
+                    .where(AIDecisionLog.finding_id.isnot(None))
+                    .subquery("latest_decision")
+                )
+                ld = (
+                    select(latest_decision_sq)
+                    .where(latest_decision_sq.c.rn == 1)
+                    .subquery("ld")
+                )
+
+                query = (
+                    select(
+                        Finding,
+                        ld.c.decision_id, ld.c.agent_id, ld.c.confidence_score,
+                        ld.c.reasoning, ld.c.decision_action, ld.c.linked_case_id,
+                        Client.display_name.label("client_display_name"),
+                        Case.status.label("linked_case_status"),
+                        CaseSLA.resolution_due, CaseSLA.breached,
+                        CaseSLA.resolution_completed_at,
+                    )
+                    .select_from(Finding)
+                    .join(ld, ld.c.finding_id == Finding.finding_id)
+                    .outerjoin(Client, Client.client_id == Finding.client_id)
+                    .outerjoin(Case, Case.case_id == ld.c.linked_case_id)
+                    .outerjoin(CaseSLA, CaseSLA.case_id == ld.c.linked_case_id)
+                )
+
+                filters = []
+                if client_id is not None:
+                    filters.append(Finding.client_id == client_id)
+                if exclude_statuses:
+                    filters.append(or_(Finding.status.is_(None), Finding.status.notin_(exclude_statuses)))
+                if filters:
+                    query = query.where(and_(*filters))
+
+                query = query.order_by(Finding.timestamp.desc()).limit(candidate_limit)
+
+                rows = session.execute(query).all()
+                results = []
+                for row in rows:
+                    finding = row[0]
+                    session.expunge(finding)
+                    d = finding.to_dict()
+                    d.update({
+                        "decision_id": row.decision_id,
+                        "agent_id": row.agent_id,
+                        "confidence_score": row.confidence_score,
+                        "reasoning": row.reasoning,
+                        "decision_action": row.decision_action,
+                        "linked_case_id": row.linked_case_id,
+                        "client_display_name": row.client_display_name,
+                        "linked_case_status": row.linked_case_status,
+                        "sla_resolution_due": row.resolution_due.isoformat() if row.resolution_due else None,
+                        "sla_breached": row.breached,
+                        "sla_resolution_completed_at": (
+                            row.resolution_completed_at.isoformat() if row.resolution_completed_at else None
+                        ),
+                    })
+                    results.append(d)
+                return results
+        except Exception as e:
+            logger.error(f"Error getting priority queue candidates: {e}")
+            return []
+
+    def get_or_create_client_portal_user(
+        self, client_id: str, password_hash: Optional[str] = None, display_name: Optional[str] = None,
+    ) -> Optional[User]:
+        """Idempotent fetch-or-create of the one role-client User identity
+        a client's portal access resolves to (client-portal design spec,
+        2026-08-21). Both auth paths -- password login and the
+        client-credentials token exchange (backend/api/auth.py) -- log
+        the client into this SAME row, so "logged in as Cybervergent" is
+        one identity regardless of how they authenticated, not two
+        parallel accounts.
+
+        get_current_user (backend/middleware/auth.py) re-fetches the
+        User row from the DB by the JWT's user_id rather than trusting
+        role_id/client_id from the token claims -- so a real row here is
+        required, not optional, for the client-credentials path to work
+        at all.
+
+        password_hash: pass a real bcrypt hash (AuthService.hash_password)
+        to make/keep this account password-loginable (e.g. the
+        Cybervergent test account); omit to leave an existing row's
+        password untouched, or -- if creating fresh -- generate one from
+        a random, never-communicated secret (this identity is meant to
+        be reached via client-token, not password, in that case).
+        """
+        import secrets as _secrets
+
+        user_id = f"user-client-{client_id}"
+        try:
+            with self.db_manager.session_scope() as session:
+                user = session.get(User, user_id)
+                if user is None:
+                    from backend.services.auth_service import AuthService
+
+                    user = User(
+                        user_id=user_id,
+                        username=f"{client_id}-portal",
+                        email=f"{client_id}-portal@clients.sentry-agentic.local",
+                        password_hash=password_hash or AuthService.hash_password(_secrets.token_urlsafe(24)),
+                        full_name=display_name or client_id,
+                        role_id="role-client",
+                        client_id=client_id,
+                        is_active=True,
+                        is_verified=True,
+                    )
+                    session.add(user)
+                elif password_hash:
+                    user.password_hash = password_hash
+                session.flush()
+                session.expunge(user)
+                return user
+        except Exception as e:
+            logger.error(f"Error creating/fetching client portal user for {client_id}: {e}")
+            return None
+
+    def get_client(self, client_id: str) -> Optional[dict]:
+        """Look up one Client row by id -- used to validate a client_id
+        exists before issuing it API credentials (backend/api/clients.py)
+        or minting a client-token (backend/api/auth.py)."""
+        try:
+            with self.db_manager.session_scope() as session:
+                client = session.get(Client, client_id)
+                return client.to_dict() if client else None
+        except Exception as e:
+            logger.error(f"Error fetching client {client_id}: {e}")
+            return None
+
+    def create_client_credential(
+        self, client_id: str, client_secret_hash: str, label: Optional[str] = None,
+        created_by: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Insert a new client-portal API credential row (client-portal
+        design spec, 2026-08-21). Caller (backend/api/clients.py) has
+        already generated the plaintext secret and hashed it via
+        AuthService.hash_password -- this layer only ever sees/stores the
+        hash. Returns the created row's to_dict() (never includes the
+        hash) or None on failure."""
+        import uuid
+        try:
+            with self.db_manager.session_scope() as session:
+                row = ClientApiCredential(
+                    credential_id=f"cred-{uuid.uuid4().hex[:20]}",
+                    client_id=client_id,
+                    client_secret_hash=client_secret_hash,
+                    label=label,
+                    created_by=created_by,
+                )
+                session.add(row)
+                session.flush()
+                d = row.to_dict()
+                session.expunge(row)
+                return d
+        except Exception as e:
+            logger.error(f"Error creating client credential for {client_id}: {e}")
+            return None
+
+    def get_active_client_credentials(self, client_id: str) -> List[ClientApiCredential]:
+        """All active credential rows for one client -- caller (backend/
+        api/auth.py's client-token exchange) bcrypt-compares the supplied
+        secret against each, since bcrypt hashes aren't directly
+        queryable. Small, bounded set per client (rotation-friendly, not
+        high-cardinality), so comparing a handful in Python is fine."""
+        try:
+            with self.db_manager.session_scope() as session:
+                query = select(ClientApiCredential).where(
+                    ClientApiCredential.client_id == client_id,
+                    ClientApiCredential.is_active.is_(True),
+                )
+                rows = session.execute(query).scalars().all()
+                for row in rows:
+                    session.expunge(row)
+                return list(rows)
+        except Exception as e:
+            logger.error(f"Error fetching client credentials for {client_id}: {e}")
+            return []
+
+    def touch_client_credential_last_used(self, credential_id: str) -> None:
+        """Best-effort last_used_at bump on successful token exchange --
+        never blocks/raises the auth flow if it fails."""
+        try:
+            with self.db_manager.session_scope() as session:
+                cred = session.get(ClientApiCredential, credential_id)
+                if cred:
+                    cred.last_used_at = datetime.utcnow()
+        except Exception as e:
+            logger.debug(f"Non-fatal: failed to update last_used_at for {credential_id}: {e}")
+
+    def get_client_decision_ledger(
+        self, client_id: str, limit: int = 100, offset: int = 0,
+    ) -> List[dict]:
+        """AIDecisionLog rows for one client's findings, newest first --
+        the Action Ledger's data source (client-portal design spec,
+        2026-08-21, Agentic Operations Center). Autonomy tier is derived
+        by the caller (backend/api/portal.py) from decision_type/
+        decision_action/confidence_score, not stored here."""
+        try:
+            with self.db_manager.session_scope() as session:
+                query = (
+                    select(AIDecisionLog, Finding.entity_context, Finding.severity)
+                    .join(Finding, Finding.finding_id == AIDecisionLog.finding_id)
+                    .where(Finding.client_id == client_id)
+                    .order_by(AIDecisionLog.timestamp.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+                rows = session.execute(query).all()
+                results = []
+                for decision, entity_context, severity in rows:
+                    d = {
+                        "decision_id": decision.decision_id,
+                        "agent_id": decision.agent_id,
+                        "decision_type": decision.decision_type,
+                        "confidence_score": decision.confidence_score,
+                        "reasoning": decision.reasoning,
+                        "recommended_action": decision.recommended_action,
+                        "decision_action": decision.decision_action,
+                        "finding_id": decision.finding_id,
+                        "timestamp": decision.timestamp.isoformat() if decision.timestamp else None,
+                        "entity_context": entity_context,
+                        "severity": severity,
+                    }
+                    results.append(d)
+                return results
+        except Exception as e:
+            logger.error(f"Error getting decision ledger for client {client_id}: {e}")
+            return []
+
+    def get_client_decision_scorecard(self, client_id: str) -> dict:
+        """Agent Performance Scorecard aggregate for one client
+        (client-portal design spec, 2026-08-21). Honest about sparse
+        data by design: graded_count tells the caller how many decisions
+        actually carry human feedback, so the UI can label rates as
+        "based on N graded decisions" rather than presenting an
+        always-on number computed from a near-empty sample."""
+        try:
+            with self.db_manager.session_scope() as session:
+                base = (
+                    select(AIDecisionLog)
+                    .join(Finding, Finding.finding_id == AIDecisionLog.finding_id)
+                    .where(Finding.client_id == client_id)
+                )
+                total = session.execute(
+                    select(func.count()).select_from(base.subquery())
+                ).scalar() or 0
+
+                graded = (
+                    base.where(AIDecisionLog.accuracy_grade.isnot(None))
+                )
+                graded_rows = session.execute(graded).scalars().all()
+                graded_count = len(graded_rows)
+
+                overturned = sum(
+                    1 for d in graded_rows
+                    if d.decision_action in ("override", "modify")
+                )
+                avg_accuracy = (
+                    round(sum(d.accuracy_grade for d in graded_rows) / graded_count, 2)
+                    if graded_count else None
+                )
+                avg_time_saved = None
+                time_saved_values = [d.time_saved_minutes for d in graded_rows if d.time_saved_minutes is not None]
+                if time_saved_values:
+                    avg_time_saved = round(sum(time_saved_values) / len(time_saved_values), 1)
+
+                return {
+                    "total_decisions": total,
+                    "graded_count": graded_count,
+                    "human_overturn_rate": round(overturned / graded_count, 2) if graded_count else None,
+                    "avg_accuracy_grade": avg_accuracy,
+                    "avg_time_saved_minutes": avg_time_saved,
+                }
+        except Exception as e:
+            logger.error(f"Error computing decision scorecard for client {client_id}: {e}")
+            return {
+                "total_decisions": 0, "graded_count": 0, "human_overturn_rate": None,
+                "avg_accuracy_grade": None, "avg_time_saved_minutes": None,
+            }
 
     def update_finding(self, finding_id: str, **updates) -> bool:
         """

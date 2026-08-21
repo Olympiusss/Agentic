@@ -187,6 +187,16 @@ export const findingsApi = {
     api.post(`/findings/${id}/enrich`, null, { params: { force_regenerate } }),
 
   deleteAll: () => api.delete('/findings/all'),
+
+  // Unified Priority Queue (Analyst Workbench v1, 2026-08-20)
+  getQueue: (params?: {
+    segment?: 'needs_decision' | 'spot_check' | 'in_progress' | 'multi_tenant_pattern'
+    client_id?: string
+    offset?: number
+    limit?: number
+  }) => api.get('/findings/queue', { params }),
+
+  getNotificationPreview: (id: string) => api.get(`/findings/${id}/notification-preview`),
 }
 
 // SentinelOne real-time dashboard snapshot (background-refreshed every 5
@@ -194,6 +204,20 @@ export const findingsApi = {
 export const dashboardApi = {
   getSentinelOneOverview: () => api.get('/dashboard/sentinelone-overview'),
   getStrategicInsights: () => api.get('/dashboard/strategic-insights'),
+}
+
+// Client-facing portal (Security Insights Platform, 2026-08-21) --
+// every endpoint here is scoped server-side to the caller's own
+// client_id, never a param the frontend controls.
+export const portalApi = {
+  getHome: () => api.get('/portal/home'),
+  getActionLedger: (params?: { segment?: 'declined'; offset?: number; limit?: number }) =>
+    api.get('/portal/action-ledger', { params }),
+  getScorecard: () => api.get('/portal/scorecard'),
+  getApprovals: () => api.get('/portal/approvals'),
+  approveAction: (actionId: string) => api.post(`/portal/approvals/${actionId}/approve`),
+  rejectAction: (actionId: string, reason: string) =>
+    api.post(`/portal/approvals/${actionId}/reject`, { reason }),
 }
 
 // Client registry API -- EDR (SentinelOne) / SIEM (AlienVault Central) / Both per client

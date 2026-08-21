@@ -10,10 +10,15 @@ triggers one synchronous refresh so the page still shows real data.
 
 import asyncio
 import logging
+import secrets
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+
+from backend.middleware.auth import get_current_user
+from backend.services.auth_service import AuthService
+from database.models import User
 
 router = APIRouter(prefix="/api/clients", tags=["clients"])
 logger = logging.getLogger(__name__)
@@ -22,6 +27,10 @@ logger = logging.getLogger(__name__)
 class OverrideRequest(BaseModel):
     s1_site_name: str
     av_deployment_name: str
+
+
+class CreateCredentialRequest(BaseModel):
+    label: str | None = None
 
 
 @router.get("/")
@@ -103,3 +112,53 @@ async def get_client_detail(name: str, hours_back: int = Query(default=24, ge=1,
         result["siem"] = {"alarms": asdict(alarms), "events": asdict(events)}
 
     return result
+
+
+@router.post("/{client_id}/credentials")
+async def create_client_credential(
+    client_id: str,
+    body: CreateCredentialRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Issue a new client-portal API credential (client-portal design
+    spec, 2026-08-21) -- the "external clients... config with their own
+    token or client id" auth path. Admin-only (users.write, same gate as
+    the rest of user/access management). Returns the plaintext secret
+    exactly once; only its bcrypt hash is ever persisted
+    (database/service.py::create_client_credential), so it can never be
+    retrieved again -- standard API-key issuance UX.
+    """
+    if not AuthService.check_permission(current_user.user_id, "users.write"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied: users.write required",
+        )
+
+    from database.service import DatabaseService
+
+    db_service = DatabaseService()
+    if not db_service.get_client(client_id):
+        raise HTTPException(status_code=404, detail=f"Unknown client: {client_id}")
+
+    # Ensure the backing portal user identity exists (idempotent, no-op
+    # on password if it's already there) -- get_current_user re-fetches
+    # a real User row by the JWT's user_id, so the client-token exchange
+    # below has nothing to log in as without this.
+    db_service.get_or_create_client_portal_user(client_id)
+
+    client_secret = secrets.token_urlsafe(32)
+    secret_hash = AuthService.hash_password(client_secret)
+    credential = db_service.create_client_credential(
+        client_id=client_id,
+        client_secret_hash=secret_hash,
+        label=body.label,
+        created_by=current_user.username,
+    )
+    if not credential:
+        raise HTTPException(status_code=500, detail="Failed to create client credential")
+
+    return {
+        **credential,
+        "client_secret": client_secret,
+        "warning": "This secret is shown once and cannot be retrieved again -- store it securely.",
+    }

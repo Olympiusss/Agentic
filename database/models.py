@@ -811,6 +811,59 @@ class Client(Base):
         }
 
 
+class ClientApiCredential(Base):
+    """
+    Client-portal API credentials (client_id + secret -> bearer token),
+    the "external clients not on our security solution... config with
+    their own token or client id" auth path from the client-portal
+    design spec (2026-08-21). Deliberately its own table rather than a
+    single secret column on Client -- supports multiple/rotatable
+    credentials per client, the standard API-key UX (issue a new one,
+    revoke an old one, without a shared-secret downtime window).
+
+    Only the bcrypt hash is ever stored (via
+    AuthService.hash_password) -- the plaintext secret is generated and
+    returned exactly once, at creation, by
+    backend/api/clients.py::create_client_credential(), and can never
+    be retrieved again (same posture as a typical API-key provider).
+    Verified by backend/api/auth.py::client_token() against every
+    active credential for the given client_id.
+    """
+
+    __tablename__ = "client_api_credentials"
+
+    credential_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    client_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("clients.client_id", ondelete="CASCADE"), nullable=False
+    )
+    client_secret_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    label: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, server_default=text("now()")
+    )
+    created_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_client_api_credentials_client_id", "client_id"),
+    )
+
+    def to_dict(self) -> dict:
+        """Never includes client_secret_hash -- this is what admin-facing
+        credential-listing endpoints should return, not the raw ORM row."""
+        return {
+            "credential_id": self.credential_id,
+            "client_id": self.client_id,
+            "label": self.label,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_by": self.created_by,
+            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
+        }
+
+
 class ConfigAuditLog(Base):
     """
     Configuration Audit Log - Tracks all configuration changes for compliance.
@@ -2657,9 +2710,23 @@ class ApprovalAction(Base):
     )
     workflow_phase_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Client-portal scoping (2026-08-21): nullable, populated best-effort
+    # by services/approval_service.py::create_action() when a caller
+    # passes it. Not yet threaded through every create_action() call site
+    # (daemon/orchestrator.py, daemon/agent_runner.py,
+    # mcp-servers/servers/approval.py, services/autonomous_response_
+    # service.py, services/workflows_service.py all call it too) --
+    # actions created by those paths stay client_id=NULL until each is
+    # updated to resolve and pass one, same "leave null rather than
+    # guess" posture as Finding.client_id.
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String(64), ForeignKey("clients.client_id"), nullable=True
+    )
+
     __table_args__ = (
         Index("idx_approval_actions_status_created", "status", "created_at"),
         Index("idx_approval_actions_workflow_run", "workflow_run_id"),
+        Index("idx_approval_actions_client_id", "client_id"),
     )
 
     def to_dict(self) -> dict:
@@ -2684,6 +2751,7 @@ class ApprovalAction(Base):
             "parameters": self.parameters or {},
             "workflow_run_id": self.workflow_run_id,
             "workflow_phase_id": self.workflow_phase_id,
+            "client_id": self.client_id,
         }
 
 

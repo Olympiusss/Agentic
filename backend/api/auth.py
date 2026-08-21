@@ -213,6 +213,63 @@ async def login(
     )
 
 
+class ClientTokenRequest(BaseModel):
+    """Client-portal credential exchange (client-portal design spec,
+    2026-08-21) -- the "external clients not on our security
+    solution... config with their own token or client id" auth path."""
+    client_id: str
+    client_secret: str
+
+
+class ClientTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    client_id: str
+
+
+@router.post("/client-token", response_model=ClientTokenResponse)
+@limiter.limit("5/minute")
+async def client_token(request: Request, payload: ClientTokenRequest):
+    """Exchange a client_id + client_secret (issued via
+    POST /api/clients/{client_id}/credentials) for a bearer access
+    token. Deliberately returns the token in the response body only --
+    no cookies -- this path is for programmatic/API clients, not the
+    browser portal UI (which uses the normal cookie-based /login).
+    get_current_user's existing Bearer-header fallback accepts the
+    result with zero changes on that side.
+
+    Bcrypt-compares the supplied secret against every active credential
+    row for the client_id (a small, bounded set -- rotation-friendly,
+    not high-cardinality) since hashes aren't directly queryable.
+    Resolves to the same portal User identity password login for this
+    client_id would (database/service.py's get_or_create_client_portal_
+    user) -- one client, one identity, two ways in.
+    """
+    from database.service import DatabaseService
+
+    db_service = DatabaseService()
+    credentials = db_service.get_active_client_credentials(payload.client_id)
+    matched = next(
+        (c for c in credentials if AuthService.verify_password(payload.client_secret, c.client_secret_hash)),
+        None,
+    )
+    if not matched:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid client_id or client_secret",
+        )
+
+    db_service.touch_client_credential_last_used(matched.credential_id)
+
+    user = db_service.get_or_create_client_portal_user(payload.client_id)
+    if not user:
+        raise HTTPException(status_code=500, detail="Failed to resolve client portal identity")
+
+    access_token = AuthService.generate_jwt_token(user, "access")
+    logger.info(f"Client token issued for client_id={payload.client_id}")
+    return ClientTokenResponse(access_token=access_token, client_id=payload.client_id)
+
+
 @router.post("/logout")
 async def logout(
     request: Request,

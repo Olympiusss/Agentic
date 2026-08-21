@@ -87,6 +87,8 @@ class PendingAction:
     # #128 — workflow phase approvals link back here.
     workflow_run_id: Optional[str] = None
     workflow_phase_id: Optional[str] = None
+    # Client-portal scoping (2026-08-21) -- see ApprovalAction.client_id.
+    client_id: Optional[str] = None
 
 
 def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
@@ -111,6 +113,7 @@ def _row_to_pending(row: ApprovalActionRow) -> PendingAction:
         parameters=dict(row.parameters or {}),
         workflow_run_id=row.workflow_run_id,
         workflow_phase_id=row.workflow_phase_id,
+        client_id=row.client_id,
     )
 
 
@@ -254,12 +257,17 @@ class ApprovalService:
         parameters: Optional[Dict] = None,
         workflow_run_id: Optional[str] = None,
         workflow_phase_id: Optional[str] = None,
+        client_id: Optional[str] = None,
     ) -> PendingAction:
         """Create a new pending action.
 
         Workflow phase approvals pass ``workflow_run_id`` and
         ``workflow_phase_id`` so the approvals UI / resume endpoint can
-        link back to the paused run.
+        link back to the paused run. ``client_id`` (2026-08-21, client
+        portal) is optional and best-effort -- most existing callers
+        don't resolve one yet, so it's left null rather than guessed;
+        an action with no client_id simply won't surface in any
+        client-scoped Pending Approvals view.
         """
         if self.force_manual_approval:
             requires_approval = True
@@ -292,6 +300,7 @@ class ApprovalService:
                     parameters=dict(parameters or {}),
                     workflow_run_id=workflow_run_id,
                     workflow_phase_id=workflow_phase_id,
+                    client_id=client_id,
                 )
                 session.add(row)
                 session.flush()
@@ -324,9 +333,14 @@ class ApprovalService:
         action_type: Optional[ActionType] = None,
         requires_approval: Optional[bool] = None,
         workflow_run_id: Optional[str] = None,
+        client_id: Optional[str] = None,
         limit: int = 500,
     ) -> List[PendingAction]:
-        """List actions with optional filters, newest first."""
+        """List actions with optional filters, newest first. ``client_id``
+        (2026-08-21, client portal) filters to that client's actions only
+        -- callers enforcing role-client scoping must derive it from the
+        authenticated user server-side, never from a caller-supplied
+        value for that role, same posture as backend/api/findings.py."""
         try:
             db = get_db_manager()
             with db.session_scope() as session:
@@ -345,6 +359,8 @@ class ApprovalService:
                     stmt = stmt.where(
                         ApprovalActionRow.workflow_run_id == workflow_run_id
                     )
+                if client_id is not None:
+                    stmt = stmt.where(ApprovalActionRow.client_id == client_id)
                 stmt = stmt.order_by(ApprovalActionRow.created_at.desc()).limit(limit)
                 rows = session.execute(stmt).scalars().all()
                 return [_row_to_pending(r) for r in rows]

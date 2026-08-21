@@ -52,6 +52,7 @@ from api import (
 )
 from api.dashboard import router as dashboard_router
 from api.clients import router as clients_router
+from api.portal import router as portal_router
 from api.local_services import router as local_services_router
 from api.integrations_compatibility import router as compatibility_router
 from api.ingestion import router as ingestion_router
@@ -281,6 +282,7 @@ app.include_router(
 )
 app.include_router(dashboard_router, dependencies=AUTH_DEPENDENCY)
 app.include_router(clients_router, dependencies=AUTH_DEPENDENCY)
+app.include_router(portal_router, dependencies=AUTH_DEPENDENCY)
 
 # Claude routes expose AI and agent execution capabilities and must require
 # an authenticated user session. Keep rate limiting in addition to auth.

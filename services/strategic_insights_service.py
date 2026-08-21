@@ -184,11 +184,18 @@ def _latest_system_health() -> Optional[dict]:
         return None
 
 
-def get_strategic_insights(window_hours: int = 72) -> StrategicInsights:
+def get_strategic_insights(window_hours: int = 72, client_id: Optional[str] = None) -> StrategicInsights:
     """Aggregates over internally-stored SentinelOne-sourced findings from
     the last `window_hours` -- never calls SentinelOne directly (that's
     services/sentinelone_dashboard_service.py's job); this reads only
-    what our own pipeline already concluded."""
+    what our own pipeline already concluded.
+
+    client_id (client-portal design spec, 2026-08-21): scopes to one
+    client's findings instead of the tenant-wide default (None) --
+    callers enforcing role-client scoping must derive it from the
+    authenticated user server-side, never from a caller-supplied value
+    for that role, same posture as backend/api/findings.py.
+    """
     from services.database_data_service import DatabaseDataService
 
     now = datetime.now(timezone.utc)
@@ -196,7 +203,7 @@ def get_strategic_insights(window_hours: int = 72) -> StrategicInsights:
 
     try:
         svc = DatabaseDataService()
-        findings = svc.get_findings(data_source="sentinelone", limit=500)
+        findings = svc.get_findings(data_source="sentinelone", limit=500, client_id=client_id)
     except Exception as e:  # noqa: BLE001
         logger.error("Strategic insights: failed to load findings: %s", e)
         return StrategicInsights(generated_at=now.isoformat(), error=str(e))
