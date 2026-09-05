@@ -128,4 +128,4 @@ See [NOTICES](NOTICES) for full attribution.
 
 ---
 
-*Built by Cybervergent Ltd.*
+
